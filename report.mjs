@@ -100,7 +100,7 @@ for (const it of touched.values()) {
   await sb('bot_issues?on_conflict=fingerprint', { method: 'POST', body: JSON.stringify(row), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
 }
 const cost = usage ? (usage.prompt_tokens * 0.1 + usage.completion_tokens * 0.5) / 1e6 : null;   // gpt-6-luna's price (bot-office/office/lib/prices.mjs)
-const report = { day, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost };
+const report = { day, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost, created_at: new Date().toISOString() };   // a rerun of the same day shows when it was rebuilt
 await sb('bot_reports?on_conflict=day', { method: 'POST', body: JSON.stringify(report), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
 console.log(`[report] saved: ${total.runs} runs, ${total.failedRuns} failed, ${touched.size} problems seen, AI $${total.aiCost}`);
 
