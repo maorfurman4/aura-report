@@ -62,8 +62,8 @@ export function productsOf(bot, rows) {
 // health 0-100 and the reasons for every point taken
 export function health({ failedRuns = 0, missing = 0, issues = [], costJump = 0 }) {
   const minus = [];
-  if (failedRuns) minus.push([15 * failedRuns, `${failedRuns} ריצות נכשלו`]);
-  if (missing) minus.push([10 * missing, `${missing} ריצות מתוזמנות לא קרו`]);
+  if (failedRuns) minus.push([15 * failedRuns, (failedRuns === 1 ? 'ריצה אחת נכשלה' : `${failedRuns} ריצות נכשלו`)]);
+  if (missing) minus.push([10 * missing, (missing === 1 ? 'ריצה מתוזמנת אחת לא קרתה' : `${missing} ריצות מתוזמנות לא קרו`)]);
   for (const i of issues) minus.push([i.severity === 'critical' ? 20 : 5, `בעיה פתוחה: ${i.title || i.station || 'שגיאה'}`]);
   if (costJump > 0.5) minus.push([Math.min(10, Math.round(costJump * 10)), `עלות AI עלתה ב-${Math.round(costJump * 100)}% מהממוצע`]);
   const score = Math.max(0, 100 - minus.reduce((n, [p]) => n + p, 0));
