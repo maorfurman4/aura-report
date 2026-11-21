@@ -98,7 +98,8 @@ Data: ${JSON.stringify(brief)}`;
 for (const it of touched.values()) {
   const row = { fingerprint: it.fingerprint, bot: it.bot, station: it.station, severity: it.severity, title: it.title || null, sample: it.sample, file: it.file || null, line: it.line || null, func: it.func || null,
     first_seen: it.first_seen, last_seen: it.last_seen, count: it.count, day_counts: it.day_counts, status: it._new ? 'new' : it.status === 'new' ? 'open' : it.status, explanation: it.explanation || null, suggestion: it.suggestion || null, updated_at: new Date().toISOString() };
-  await sb('bot_issues?on_conflict=fingerprint', { method: 'POST', body: JSON.stringify(row), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
+  const [saved] = await sb('bot_issues?on_conflict=fingerprint&select=id', { method: 'POST', body: JSON.stringify(row), headers: { Prefer: 'resolution=merge-duplicates,return=representation' } });
+  it.id = saved?.id ?? it.id;                                     // a new problem gets its id here, for its Telegram button
 }
 for (const it of closed) {
   await sb(`bot_issues?id=eq.${it.id}`, { method: 'PATCH', body: JSON.stringify({ status: it.status, fixed_at: it.fixed_at, note: it.note, updated_at: new Date().toISOString() }), headers: { Prefer: 'return=minimal' } });
@@ -112,5 +113,8 @@ console.log(`[report] saved: ${total.runs} runs, ${total.failedRuns} failed, ${t
 // ---------- Telegram: a short summary ----------
 if (!env.REPORT_DAY) {
   const text = telegramText({ day, total, facts, problems: [...touched.values()], closed, budget: money, summary: analysis?.summary, late: Boolean(env.REPORT_MORNING) });
-  if (await telegram(text)) await sb(`bot_reports?day=eq.${day}`, { method: 'PATCH', body: JSON.stringify({ telegram: true }), headers: { Prefer: 'return=minimal' } });
+  // a "✔️ תיקנתי" button per problem still open; the aura-watch function (Supabase) gets the press
+  const open = [...touched.values()].filter((i) => i.id && i.status !== 'fixed').slice(0, 6);
+  const buttons = open.length ? { reply_markup: { inline_keyboard: open.map((i) => [{ text: `✔️ תיקנתי: ${String(i.title || i.station || 'שגיאה').slice(0, 40)}`, callback_data: `fixed:${i.id}` }]) } } : {};
+  if (await telegram(text, buttons)) await sb(`bot_reports?day=eq.${day}`, { method: 'PATCH', body: JSON.stringify({ telegram: true }), headers: { Prefer: 'return=minimal' } });
 }

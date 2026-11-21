@@ -1,6 +1,6 @@
 // node test.mjs : the report's facts are right
 import assert from 'node:assert/strict';
-import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText, slotsOf, watchAlerts } from './lib.mjs';
 
 assert.equal(ilDay(Date.parse('2026-11-19T22:30:00Z')), '2026-11-20', 'Israel is UTC+2 in winter');
 assert.equal(new Date(ilDayStart('2026-11-20')).toISOString(), '2026-11-19T22:00:00.000Z');
@@ -70,4 +70,24 @@ const w = weeklyText({ days: weekOf('2026-11-21'), reports: [day1, day1], prevRe
 assert.ok(w.includes('15/11–21/11') && w.includes('2/7 ימים') && w.includes('(שבוע קודם $1.00, +100%)'));
 assert.ok(w.includes("🔴 <b>פנדה</b>: אמינות 89% · 18 ריצות · 2 נכשלו") && w.includes('⚪ <b>חדשות</b>: לא רץ'), '16 of 18');
 assert.ok(w.includes('• חוזרת (פנדה · 2 ימים · ×3)') && !w.includes('פעם'));
+// the hourly watch (now: 2026-11-20 14:00 in Israel)
+const NOW = Date.parse('2026-11-20T12:00:00Z');
+assert.ok(slotsOf({ il: ['05:30'] }, NOW).includes(Date.parse('2026-11-20T03:30:00Z')));
+assert.ok(slotsOf({ utc: ['04:00'] }, NOW).includes(Date.parse('2026-11-20T04:00:00Z')));
+assert.equal(slotsOf({ hourly: [7, 23] }, NOW).length, 34);
+const wb = [
+  { bot: 'debi', name: 'דבי', schedule: { il: ['05:30', '22:00'] }, checkMissing: true, pipelines: [['weather', 'writer']] },
+  { bot: 'news', name: 'חדשות', schedule: { utc: ['04:00'] }, checkMissing: true, pipelines: [['market', 'courier']] },
+  { bot: 'panda', name: 'פנדה', pipelines: [['slot', 'fit', 'broadcast']] },
+];
+const ev = (bot, iso, station_id, status, text) => ({ bot, ts: `2026-11-${iso}Z`, station_id, status, text });
+const alerts = watchAlerts({ bots: wb, now: NOW, events: [
+  ev('debi', '20T03:31:00', 'writer', 'done'), ev('news', '20T04:20:00', 'courier', 'done'),
+  ev('panda', '20T10:00:00', 'fit', 'error', 'soft'), ev('panda', '20T10:01:00', 'broadcast', 'done'),
+  ev('panda', '20T11:00:00', 'slot', 'working'), ev('panda', '20T11:01:00', 'fit', 'error', 'boom <x>'),
+] });
+assert.deepEqual(alerts.map((a) => a.key), ['miss|debi|2026-11-19T20:00:00.000Z', 'fail|panda|2026-11-20T11:00:00.000Z'],
+  'debi ran at 05:30 but not at 22:00 yesterday; news ran late but within 3 hours; panda delivered at 12:00 despite an error, not at 13:00');
+assert.ok(alerts[0].text.includes('22:00 לא קרתה') && alerts[1].text.includes('תחנה fit') && alerts[1].text.includes('boom &lt;x&gt;'));
+assert.equal(watchAlerts({ bots: wb.slice(2), now: Date.parse('2026-11-20T11:05:00Z'), events: [ev('panda', '20T11:00:00', 'slot', 'working'), ev('panda', '20T11:01:00', 'fit', 'error')] }).length, 0, 'a run 4 minutes old may still retry');
 console.log('ok: report facts');

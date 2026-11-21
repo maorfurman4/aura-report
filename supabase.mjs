@@ -10,12 +10,12 @@ export async function sb(path, opts = {}) {
 }
 
 // a Telegram message to Maor (HTML); false when the pair is not set or the send failed
-export async function telegram(text) {
+export async function telegram(text, extra = {}) {
   const { REPORT_TELEGRAM_TOKEN: token, REPORT_TELEGRAM_CHAT: chat } = process.env;
   if (!token || !chat) return false;
   const r = await fetch(`https://api.telegram.org/bot${token}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML', disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: chat, text, parse_mode: 'HTML', disable_web_page_preview: true, ...extra }),
   }).catch(() => null);
   if (!r?.ok) console.error('[report] telegram failed', r?.status);
   return Boolean(r?.ok);

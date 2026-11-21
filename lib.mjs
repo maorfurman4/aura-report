@@ -121,6 +121,44 @@ export function budget(rows, day, limit = 15) {
   return { spent: Number(spent.toFixed(4)), forecast: Number(forecast.toFixed(4)), limit, over: forecast > limit };
 }
 
+// a fixed schedule's run times (ms) on yesterday and today; Israel times are counted from the day's start (shortcut:
+// on a DST day an Israel time is an hour off, fine for a 3-hour grace)
+export function slotsOf(sc, now) {
+  const today = ilDay(now), out = [];
+  for (const d of [ilDay(ilDayStart(today) - 1), today]) {
+    const start = ilDayStart(d);
+    if (sc.hourly) for (let h = sc.hourly[0]; h <= sc.hourly[1]; h++) out.push(start + h * 3600_000);
+    for (const t of sc.il || []) { const [h, m] = t.split(':').map(Number); out.push(start + (h * 60 + m) * 60_000); }
+  }
+  for (const k of [1, 0]) for (const t of sc.utc || []) out.push(Date.parse(`${new Date(now - k * 86_400_000).toISOString().slice(0, 10)}T${t}:00Z`));
+  return out;
+}
+
+// the hourly watch, only what is critical: a run that failed without its product, or a scheduled run that did not happen
+// within `graceH` hours. Every alert has a key, so it is sent once (the watch keeps the keys).
+export function watchAlerts({ bots, events, now, graceH = 3 }) {
+  const esc = (s) => String(s ?? '').replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]));
+  const out = [];
+  for (const b of bots) {
+    const rows = events.filter((e) => e.bot === b.bot), last = new Set(b.pipelines.map((p) => p.at(-1)));
+    for (const run of runsOf(rows)) {
+      if (!run.failed || run.end > now - 10 * 60_000 || run.end < now - 2 * 3600_000) continue;   // a run still going may retry
+      if (run.rows.some((r) => r.status === 'done' && last.has(r.station_id))) continue;           // it failed on the way but delivered
+      const err = run.rows.find((r) => r.status === 'error' || r.kind === 'failed');
+      out.push({ key: `fail|${b.bot}|${new Date(run.start).toISOString()}`,
+        text: `🚨 <b>${esc(b.name)}</b>: ריצה נכשלה בלי תוצר (${ilHM(run.start)}${err?.station_id ? `, תחנה ${esc(err.station_id)}` : ''})${err?.text ? `\n<code>${esc(String(err.text).slice(0, 200))}</code>` : ''}` });
+    }
+    if (!b.checkMissing || !b.schedule) continue;
+    const ran = b.schedule.hourly ? rows.filter((r) => b.pipelines[0].includes(r.station_id)) : rows;   // panda: the deals runs, not searches
+    for (const slot of slotsOf(b.schedule, now)) {
+      if (slot + graceH * 3600_000 > now || slot < now - 24 * 3600_000) continue;
+      if (ran.some((r) => { const t = Date.parse(r.ts); return t >= slot - 15 * 60_000 && t <= slot + graceH * 3600_000; })) continue;
+      out.push({ key: `miss|${b.bot}|${new Date(slot).toISOString()}`, text: `🚨 <b>${esc(b.name)}</b>: הריצה של ${ilHM(slot)} לא קרתה (עברו ${graceH} שעות)` });
+    }
+  }
+  return out;
+}
+
 // the 7 Israel days that end on `end`, oldest first (noon of each day, so a DST change never skips one)
 export const weekOf = (end, back = 0) => Array.from({ length: 7 }, (_, i) => ilDay(ilDayStart(end) + 12 * 3600_000 - (6 - i + back) * 86_400_000));
 
