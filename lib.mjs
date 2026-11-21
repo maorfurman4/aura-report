@@ -46,7 +46,7 @@ export function runsOf(rows, gapMs = 5 * 60_000) {
 // a row of public.bots (the registry, filled from the office manifest by bot-office/office/registry.mjs) in the shape
 // the report and the watch use; a paused bot expects no runs
 export const botOf = (r) => ({ bot: r.id, name: r.name, repo: r.repo, schedule: r.schedule, hours: r.hours, pipelines: r.pipelines || [],
-  stations: r.stations || [], checkMissing: Boolean(r.check_missing && !r.paused), paused: Boolean(r.paused) });
+  stations: r.stations || [], checkMissing: Boolean(r.check_missing && !r.paused), paused: Boolean(r.paused), host: r.host || null, settings: r.settings || [] });
 
 // how many runs a bot's schedule expects on a day (only bots with a fixed schedule: webhook bots expect none)
 export function expectedRuns(bot, day) {
@@ -233,4 +233,52 @@ export function telegramText({ day, total, facts, problems = [], closed = [], bu
   let text = lines.join('\n');
   if (text.length > 4000) text = `${text.slice(0, text.lastIndexOf('\n', 3950))}\n…`;   // cut on a line: every line closes its own tags
   return text;
+}
+
+// ---------- stage 6: the live knowledge file every Claude session about the bots starts from ----------
+// the model may attach {key, value} to a suggestion only for a setting the bot really has (the office validates the value)
+export function cleanSuggestions(list, bots) {
+  return (Array.isArray(list) ? list : []).slice(0, 6).map(({ action, ...s }) => {
+    const ok = action && typeof action === 'object' && 'value' in action && bots.find((b) => b.bot === s.bot)?.settings?.some((e) => e.key === action.key);
+    return ok ? { ...s, action: { key: action.key, value: action.value } } : s;
+  });
+}
+
+const STATUS_HE = { new: 'חדשה', open: 'פתוחה', regressed: 'חזרה', fixed: 'תוקנה', ignored: 'לא רלוונטית' };
+const usd2 = (v) => `$${(Number(v) || 0).toFixed(2)}`;
+const dm = (ts) => { const d = ilDay(Date.parse(ts)); return `${d.slice(8)}.${d.slice(5, 7)}`; };
+const val = (v) => (v == null ? 'ברירת מחדל' : Array.isArray(v) ? v.join(',') : typeof v === 'object' ? JSON.stringify(v) : String(v));
+const schedText = (sc) => (!sc ? 'לפי בקשה (webhook)' : sc.hourly ? `כל שעה ${sc.hourly[0]}:00-${sc.hourly[1]}:00` : sc.utc ? `${sc.utc.join(', ')} UTC` : `${(sc.il || []).join(', ')} שעון ישראל`);
+
+// -> markdown (Hebrew). week = [{day, bots: [botFacts]}] for the last 7 days including `day`; ai = {week, month} rows
+// of ai_usage_daily with bot; changes = aura_changes of the last 30 days. Capped so the file stays short.
+export function knowledgeMd({ day, builtAt, bots, week = [], issues = [], changes = [], ai = {}, money, suggestions = [], lessons = [] }) {
+  const weekFrom = ilDayStart(day) - 6 * 86_400_000, undone = new Set(changes.map((c) => c.undo_of).filter(Boolean));
+  const sum = (rows, bot) => (rows || []).filter((r) => r.bot === bot).reduce((n, r) => n + (Number(r.cost_usd) || 0), 0);
+  const open = issues.filter((i) => ['new', 'open', 'regressed'].includes(i.status));
+  const out = ['# AURA — ידע חי על הבוטים', '',
+    `נוצר אוטומטית בדוח הלילי של ${day} (${ilHM(builtAt)}). לא לערוך ידנית: נכתב מחדש כל לילה מ-Supabase.`,
+    `AI החודש: ${usd2(money?.spent)} מתוך ${usd2(money?.limit)} · תחזית ${usd2(money?.forecast)} · בעיות פתוחות: ${open.length}`,
+    'הגדרות משנים רק דרך aura_set (ראה bot-office/CLAUDE.md, "Control"); כל שינוי נרשם וניתן לביטול.'];
+  for (const b of bots) {
+    const days = week.map((w) => w.bots?.find((f) => f.bot === b.bot)).filter(Boolean);
+    const today = week.find((w) => w.day === day)?.bots?.find((f) => f.bot === b.bot);
+    const runs = days.reduce((n, f) => n + (f.runs || 0), 0), failed = days.reduce((n, f) => n + (f.failedRuns || 0), 0);
+    const order = [...new Set((b.pipelines || []).flat())], st = (id) => b.stations.find((s) => s.id === id);
+    out.push('', `## ${b.name} (${b.bot})`,
+      `${b.repo || 'בלי מאגר'} · ${b.host || '—'} · ${schedText(b.schedule)}${b.paused ? ' · **מושהה ב-AURA**' : ''}`,
+      'מה הוא עושה:', ...(order.length ? order : b.stations.map((s) => s.id)).map((id) => `- ${st(id)?.name || id} (${id}): ${st(id)?.does || ''}`));
+    out.push(`השבוע: ${runs} ריצות, ${failed} נכשלו${runs ? ` (${Math.round((100 * (runs - failed)) / runs)}% הצלחה)` : ''}${today ? ` · ציון היום ${today.health}` : ''}`);
+    const seen = issues.filter((i) => i.bot === b.bot && Date.parse(i.last_seen) >= weekFrom).sort((x, y) => (y.count || 0) - (x.count || 0));
+    out.push(seen.length ? 'נכשל השבוע:' : 'נכשל השבוע: כלום');
+    for (const i of seen.slice(0, 5)) out.push(`- ${i.title || i.sample?.slice(0, 60) || 'שגיאה'} (${i.count || 0})${i.file ? ` ${i.file}:${i.line}` : ''} — ${STATUS_HE[i.status] || i.status}${i.station ? ` · תחנה ${i.station}` : ''}`);
+    if (seen.length > 5) out.push(`- ועוד ${seen.length - 5}`);
+    const ch = changes.filter((c) => c.bot === b.bot && !c.undo_of);
+    if (ch.length) out.push('הגדרות ששונו (30 יום):', ...ch.slice(0, 5).map((c) => `- ${dm(c.ts)} ${c.key}: ${val(c.old)}→${val(c.new)} (${c.actor})${undone.has(c.id) ? ' (בוטל)' : ''}`));
+    out.push(`עלות AI: השבוע ${usd2(sum(ai.week, b.bot))} · החודש ${usd2(sum(ai.month, b.bot))}${today?.costPerProduct != null ? ` · לתוצר היום ${usd2(today.costPerProduct)}` : ''}`);
+    const sg = suggestions.filter((s) => s.bot === b.bot);
+    if (sg.length) out.push('הצעות מהלילה:', ...sg.slice(0, 3).map((s) => `- ${s.text}${s.action ? ` [הגדרה ${s.action.key} → ${val(s.action.value)}]` : ''}`));
+  }
+  if (lessons.length) out.push('', '## שיעורים', ...lessons.slice(0, 10).map((l) => `- ${l.bot ? `${l.bot}: ` : ''}${l.lesson}`));
+  return `${out.join('\n')}\n`;
 }
