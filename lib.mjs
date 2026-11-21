@@ -116,6 +116,13 @@ export function staleIssues(issues, day, ranToday, clean = 3) {
 }
 
 // the month's AI spend so far and where it is heading: spent + the average of the last 7 days with data for every day left
+// the monthly AI budget: Maor's field in AURA (rpc aura_config('aura').settings.budget_usd), else REPORT_BUDGET, else 15
+export function limitOf(cfg, envBudget) {
+  const v = cfg?.settings?.budget_usd;
+  if (typeof v === 'number' && v > 0) return v;
+  return Number(envBudget) || 15;
+}
+
 export function budget(rows, day, limit = 15) {
   const byDay = {};
   for (const r of rows) if (r.day.slice(0, 7) === day.slice(0, 7) && r.day <= day) byDay[r.day] = (byDay[r.day] || 0) + (Number(r.cost_usd) || 0);
