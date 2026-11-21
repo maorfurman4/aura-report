@@ -1,13 +1,13 @@
 // aura-watch (Supabase Edge Function): the bots report's watch, run by pg_cron in Supabase.
-//   ?job=watch          hourly: a run that failed without its product, a scheduled run that did not happen, a dead
+//   ?job=watch          every 15 minutes: a run that failed without its product, a scheduled run that did not happen, a dead
 //                       webhook of Yahli or finance, a report that was not built by the morning. Each alert is sent once.
 //   ?job=dispatch&kind= nightly | morning | weekly: starts the report workflow on GitHub at the exact time.
 //   ?job=setup          points the report bot's Telegram webhook here (the "✔️ תיקנתי" buttons of the nightly report).
 // Jobs need the x-watch-key header (public.watch_key(), kept in Supabase Vault); Telegram is checked by its secret token.
 // Secrets (Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN,
-// YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off.
-import { ilDay, ilDayStart, watchAlerts } from '../lib.mjs';
-import manifest from '../bots.json' with { type: 'json' };
+// YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15),
+// RENDER_HEALTH_URL (default the Panda search bot's /health).
+import { botOf, budget, budgetAlert, ilDay, ilDayStart, watchAlerts } from '../lib.mjs';
 
 const env = (k: string) => Deno.env.get(k) || '';
 const SB = env('SUPABASE_URL'), SK = env('SUPABASE_SERVICE_ROLE_KEY'), TG = env('REPORT_TELEGRAM_TOKEN'), CHAT = env('REPORT_TELEGRAM_CHAT');
@@ -27,7 +27,7 @@ async function tg(method: string, body: object, token = TG) {
 // the Telegram webhook's secret: derived from the bot token, so there is no extra secret to keep
 const secret = async () => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`aura-watch|${TG}`)))].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 48);
 
-// an alert is sent once: its key goes into bot_alerts first; if Telegram fails the key is removed, so the next hour retries
+// an alert is sent once: its key goes into bot_alerts first; if Telegram fails the key is removed, so the next check retries
 async function once(key: string, text: string) {
   const added = await sb('bot_alerts?on_conflict=key', { method: 'POST', body: JSON.stringify({ key }), headers: { Prefer: 'resolution=ignore-duplicates,return=representation' } });
   if (!added?.length) return false;
@@ -38,17 +38,29 @@ async function once(key: string, text: string) {
 }
 
 async function watch() {
-  const now = Date.now(), sent: string[] = [];
+  const now = Date.now(), sent: string[] = [], hooks: Record<string, string> = {};
   const events = await sb(`bot_events?select=ts,bot,kind,text,station_id,status&ts=gte.${new Date(now - 28 * 3600_000).toISOString()}&order=ts.asc&limit=20000`);
-  for (const a of watchAlerts({ bots: manifest.bots, events, now })) if (await once(a.key, a.text)) sent.push(a.key);
+  const bots = (await sb('bots?select=*&order=sort.asc')).map(botOf);   // the registry (public.bots)
+  for (const a of watchAlerts({ bots, events, now })) if (await once(a.key, a.text)) sent.push(a.key);
+  // the month's AI budget: 80%, then over
+  const today = ilDay(now), money = budget(await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${today.slice(0, 7)}-01&day=lte.${today}`), today, Number(env('REPORT_BUDGET')) || 15);
+  const b = budgetAlert(money, today);
+  if (b && await once(b.key, b.text)) sent.push(b.key);
+  // Render (Panda's search bot, the reels approval): only 07-23, when its own pinger keeps it awake, so this adds no hours
+  const hr = ilHour(now);
+  if (hr >= 7 && hr < 23) {
+    const r = await fetch(env('RENDER_HEALTH_URL') || 'https://panda-ali-bot.onrender.com/health', { signal: AbortSignal.timeout(60_000) }).catch(() => null);
+    if (!r?.ok && await once(`render|${today}|${hr}`, `🚨 <b>Render</b>: השרת של פנדה (בוט החיפוש ואישור הרילס) לא עונה${r ? ` (${r.status})` : ''}`)) sent.push('render');
+  }
   // the bots that only answer messages: Telegram tells whether their webhook is set and whether it fails
   for (const [bot, name, token] of [['yahli', 'יהלי', env('YAHLI_TELEGRAM_TOKEN')], ['finance', 'בוט הכספים', env('FINANCE_TELEGRAM_TOKEN')]]) {
-    if (!token) continue;
+    if (!token) { hooks[bot] = 'no token'; continue; }
     const info = (await tg('getWebhookInfo', {}, token)).result;
     const [kind, why] = !info ? ['tg', 'טלגרם לא ענה על מצב ה-webhook']
       : !info.url ? ['none', 'אין webhook: הבוט לא מקבל הודעות']
       : info.last_error_date * 1000 > now - 2 * 3600_000 ? ['error', `ה-webhook נכשל: ${info.last_error_message || ''}`]
       : info.pending_update_count >= 5 ? ['pending', `${info.pending_update_count} הודעות מחכות ולא נמסרו לבוט`] : [];
+    hooks[bot] = kind || 'ok';
     if (why && await once(`hook|${bot}|${ilDay(now)}|${kind}`, `🚨 <b>${name}</b>: ${esc(why)}`)) sent.push(`hook|${bot}`);
   }
   // the morning: yesterday's full report is built (the night's run, or the 07:30 catch-up)
@@ -59,7 +71,7 @@ async function watch() {
       if (await once(`report|${y}`, `🚨 <b>דוח הבוטים</b>: הדוח המלא של ${y} לא נבנה, גם לא בבדיקת הבוקר. כדאי לבדוק את ה-workflow ב-GitHub (aura-report).`)) sent.push(`report|${y}`);
     }
   }
-  return { ok: true, events: events.length, sent };
+  return { ok: true, events: events.length, sent, hooks };
 }
 
 async function dispatch(kind: string) {

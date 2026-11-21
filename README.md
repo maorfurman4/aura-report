@@ -18,12 +18,14 @@ pair nothing is sent.
 
 ## aura-watch (Supabase)
 `watch/index.ts` is a Supabase Edge Function (`aura-watch`, no JWT: it checks its own key). pg_cron in Supabase calls it
-(migration `aura_watch`): every hour at :50 the watch (a run that failed without its product, a scheduled run 3 hours
+(migration `aura_watch`): every 15 minutes the watch (a run that failed without its product, a scheduled run 3 hours
 late, a dead webhook of Yahli or finance, a missing morning report; each alert once, kept in `bot_alerts`; quiet at
 night), and at 23:30 / 07:30 / Sunday 08:00 it starts this workflow on GitHub at the exact time (GitHub's cron stays as
 a fallback). It also gets the "✔️ תיקנתי" buttons of the nightly message (run `?job=setup` once to set the webhook).
 Secrets (Supabase > Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN
 (fine-grained, this repo only, Actions: read and write), YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN.
-Deploy with `watch/index.ts`, `lib.mjs` and `bots.json` (the function imports them from `..`).
-- `bots.json` is exported from the office manifest (office/public/js/aura.config.js); re-export when it changes.
+Deploy with `watch/index.ts` and `lib.mjs` (the function imports it from `..`). It also alerts at 80% of the month's AI
+budget and once it is over (REPORT_BUDGET, default $15), and when Render (Panda's search bot) does not answer, 07-23.
+- The bots come from the registry, Supabase `public.bots` (bot-office `office/sql/2026-11-21-bots-registry.sql`), filled
+  from the office manifest by `node office/registry.mjs` in bot-office; run it again when a bot's stations or schedule change.
 - Only technical data reaches the model: station names, error lines, numbers, times, costs. Never message content.

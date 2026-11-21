@@ -1,6 +1,6 @@
 // node test.mjs : the report's facts are right
 import assert from 'node:assert/strict';
-import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText, slotsOf, watchAlerts } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText, slotsOf, watchAlerts, botOf, budgetAlert } from './lib.mjs';
 
 assert.equal(ilDay(Date.parse('2026-11-19T22:30:00Z')), '2026-11-20', 'Israel is UTC+2 in winter');
 assert.equal(new Date(ilDayStart('2026-11-20')).toISOString(), '2026-11-19T22:00:00.000Z');
@@ -90,4 +90,11 @@ assert.deepEqual(alerts.map((a) => a.key), ['miss|debi|2026-11-19T20:00:00.000Z'
   'debi ran at 05:30 but not at 22:00 yesterday; news ran late but within 3 hours; panda delivered at 12:00 despite an error, not at 13:00');
 assert.ok(alerts[0].text.includes('22:00 לא קרתה') && alerts[1].text.includes('תחנה fit') && alerts[1].text.includes('boom &lt;x&gt;'));
 assert.equal(watchAlerts({ bots: wb.slice(2), now: Date.parse('2026-11-20T11:05:00Z'), events: [ev('panda', '20T11:00:00', 'slot', 'working'), ev('panda', '20T11:01:00', 'fit', 'error')] }).length, 0, 'a run 4 minutes old may still retry');
+// the registry row (public.bots) and the budget alert
+const row = { id: 'news', name: 'חדשות', schedule: { utc: ['04:00'] }, pipelines: [['a']], stations: [{ id: 'a' }], check_missing: true, paused: false };
+assert.equal(botOf(row).bot, 'news'); assert.equal(expectedRuns(botOf(row)), 1);
+assert.equal(expectedRuns(botOf({ ...row, paused: true })), null, 'a paused bot expects no runs');
+assert.equal(budgetAlert({ spent: 11, forecast: 14, limit: 15 }, '2026-11-21'), null);
+assert.equal(budgetAlert({ spent: 12, forecast: 20, limit: 15 }, '2026-11-21').key, 'budget|2026-11|80');
+assert.equal(budgetAlert({ spent: 15.5, forecast: 20, limit: 15 }, '2026-11-21').key, 'budget|2026-11|over');
 console.log('ok: report facts');

@@ -43,6 +43,11 @@ export function runsOf(rows, gapMs = 5 * 60_000) {
   return runs;
 }
 
+// a row of public.bots (the registry, filled from the office manifest by bot-office/office/registry.mjs) in the shape
+// the report and the watch use; a paused bot expects no runs
+export const botOf = (r) => ({ bot: r.id, name: r.name, repo: r.repo, schedule: r.schedule, hours: r.hours, pipelines: r.pipelines || [],
+  stations: r.stations || [], checkMissing: Boolean(r.check_missing && !r.paused), paused: Boolean(r.paused) });
+
 // how many runs a bot's schedule expects on a day (only bots with a fixed schedule: webhook bots expect none)
 export function expectedRuns(bot, day) {
   const sc = bot.schedule;
@@ -134,7 +139,7 @@ export function slotsOf(sc, now) {
   return out;
 }
 
-// the hourly watch, only what is critical: a run that failed without its product, or a scheduled run that did not happen
+// the watch (every 15 minutes), only what is critical: a run that failed without its product, or a scheduled run that did not happen
 // within `graceH` hours. Every alert has a key, so it is sent once (the watch keeps the keys).
 export function watchAlerts({ bots, events, now, graceH = 3 }) {
   const esc = (s) => String(s ?? '').replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]));
@@ -157,6 +162,14 @@ export function watchAlerts({ bots, events, now, graceH = 3 }) {
     }
   }
   return out;
+}
+
+// the month's AI spend against the budget: one alert at 80%, one more once it is over (each once a month)
+export function budgetAlert(money, day) {
+  const m = day.slice(0, 7), line = `$${money.spent.toFixed(2)} מתוך $${money.limit} · צפי לסוף החודש $${money.forecast.toFixed(2)}`;
+  if (money.spent > money.limit) return { key: `budget|${m}|over`, text: `💸 <b>תקציב ה-AI עבר</b>: ${line}. הבוטים ממשיכים לרוץ.` };
+  if (money.spent >= 0.8 * money.limit) return { key: `budget|${m}|80`, text: `⚠️ <b>80% מתקציב ה-AI</b>: ${line}` };
+  return null;
 }
 
 // the 7 Israel days that end on `end`, oldest first (noon of each day, so a DST change never skips one)
