@@ -1,15 +1,21 @@
 # The bots report: every night at 23:30 Israel time in winter (00:30 in summer), and on demand from the office.
 # The morning run (07:30 / 08:30) builds and sends the report only if the night's run did not; a failed run alerts on Telegram.
+# Sunday 08:00 (09:00 in summer): the weekly summary instead.
 name: nightly report
 on:
   schedule:
     - cron: '30 21 * * *'
     - cron: '30 5 * * *'
+    - cron: '0 6 * * 0'
   workflow_dispatch:
     inputs:
       day:
         description: 'Rebuild this Israel day (YYYY-MM-DD); empty = before noon yesterday, after noon today'
         required: false
+      weekly:
+        description: 'Send the weekly summary (the week ending on that day) instead'
+        type: boolean
+        default: false
 concurrency: report
 jobs:
   report:
@@ -20,7 +26,16 @@ jobs:
       - uses: actions/setup-node@v4
         with: { node-version: 20 }
       - run: node test.mjs
-      - run: node report.mjs
+      - if: github.event.schedule == '0 6 * * 0' || inputs.weekly
+        run: node weekly.mjs
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          REPORT_TELEGRAM_TOKEN: ${{ secrets.REPORT_TELEGRAM_TOKEN }}
+          REPORT_TELEGRAM_CHAT: ${{ secrets.REPORT_TELEGRAM_CHAT }}
+          REPORT_DAY: ${{ inputs.day }}
+      - if: github.event.schedule != '0 6 * * 0' && !inputs.weekly
+        run: node report.mjs
         env:
           SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
           SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}

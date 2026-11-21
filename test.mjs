@@ -1,6 +1,6 @@
 // node test.mjs : the report's facts are right
 import assert from 'node:assert/strict';
-import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, telegramText } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText } from './lib.mjs';
 
 assert.equal(ilDay(Date.parse('2026-11-19T22:30:00Z')), '2026-11-20', 'Israel is UTC+2 in winter');
 assert.equal(new Date(ilDayStart('2026-11-20')).toISOString(), '2026-11-19T22:00:00.000Z');
@@ -47,4 +47,27 @@ assert.ok(t.startsWith('⚠️') && t.includes('🔴 <b>פנדה</b>') && t.incl
 assert.ok(t.includes('x&lt;y') && t.includes('×2') && t.includes('מה לבדוק: מה (a.js:3)') && !t.includes('localhost'));
 const long = tg({ problems: Array.from({ length: 40 }, () => ({ bot: 'panda', explanation: 'א'.repeat(220), suggestion: 'ב'.repeat(220) })) });
 assert.ok(long.length <= 4000 && long.endsWith('\n…'), 'Telegram\'s limit, cut on a line');
+// problems close by themselves after 3 clean days, only while the bot keeps running
+const iss = (bot, last, status = 'open') => ({ bot, status, last_seen: `${last}T10:00:00Z` });
+const stale = staleIssues([iss('panda', '2026-11-17'), iss('panda', '2026-11-18'), iss('news', '2026-11-10'), iss('panda', '2026-11-01', 'fixed')], '2026-11-20', new Set(['panda']));
+assert.deepEqual(stale.map((i) => i.last_seen.slice(0, 10)), ['2026-11-17'], '18, 19, 20 are not 3 clean days after the 18th; a bot that did not run closes nothing');
+
+// the month's AI money: spent + the last days' average for the days left
+const m = budget([{ day: '2026-11-19', cost_usd: 0.2 }, { day: '2026-11-20', cost_usd: 0.4 }, { day: '2026-10-31', cost_usd: 9 }], '2026-11-20', 15);
+assert.equal(m.spent, 0.6, 'only this month');
+assert.equal(m.forecast, Number((0.6 + 0.3 * 10).toFixed(4))); assert.equal(m.over, false);
+assert.equal(budget([{ day: '2026-11-20', cost_usd: 2 }], '2026-11-20').over, true, '$2 a day for the 10 days left = $22, over $15');
+const tm = tg({ closed: [{ title: 'ישנה' }], budget: { spent: 0.6, forecast: 16, limit: 15, over: true } });
+assert.ok(tm.includes('נסגרו לבד') && tm.includes('ישנה') && tm.includes('⚠️ מעל התקציב ($15)'));
+
+// the weekly summary
+assert.deepEqual(weekOf('2026-11-21'), ['2026-11-15', '2026-11-16', '2026-11-17', '2026-11-18', '2026-11-19', '2026-11-20', '2026-11-21']);
+assert.equal(weekOf('2026-11-21', 7)[6], '2026-11-14');
+assert.equal(weekOf('2026-03-28')[0], '2026-03-22', 'over the March DST change');
+const day1 = { facts: { total: { aiCost: 1 }, bots: [{ bot: 'panda', name: 'פנדה', runs: 9, failedRuns: 1, missing: 0, aiCost: 1 }, { bot: 'news', name: 'חדשות', runs: 0, failedRuns: 0, missing: 0, aiCost: 0 }] } };
+const w = weeklyText({ days: weekOf('2026-11-21'), reports: [day1, day1], prevReports: [{ facts: { total: { aiCost: 1 } } }],
+  issues: [{ bot: 'panda', title: 'חוזרת', day_counts: { '2026-11-16': 2, '2026-11-18': 1 } }, { bot: 'panda', title: 'פעם', day_counts: { '2026-11-16': 1 } }] });
+assert.ok(w.includes('15/11–21/11') && w.includes('2/7 ימים') && w.includes('(שבוע קודם $1.00, +100%)'));
+assert.ok(w.includes("🔴 <b>פנדה</b>: אמינות 89% · 18 ריצות · 2 נכשלו") && w.includes('⚪ <b>חדשות</b>: לא רץ'), '16 of 18');
+assert.ok(w.includes('• חוזרת (פנדה · 2 ימים · ×3)') && !w.includes('פעם'));
 console.log('ok: report facts');

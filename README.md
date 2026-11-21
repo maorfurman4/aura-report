@@ -11,5 +11,9 @@ REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT. Without OPENAI_API_KEY the report h
 pair nothing is sent.
 
 - `node test.mjs` checks the facts; `node report.mjs` builds a report (REPORT_DAY=YYYY-MM-DD rebuilds a day).
+- A run before noon (Israel) covers yesterday. 07:30: catch-up if the night's report is missing. A failed run alerts on Telegram.
+- A problem not seen for 3 days while its bot runs closes by itself. Telegram shows the month's AI spend and forecast,
+  with an alert over REPORT_BUDGET (default $15).
+- `node weekly.mjs`: the weekly summary (Sunday 08:00, or the workflow's "weekly" input); prints it and sends it.
 - `bots.json` is exported from the office manifest (office/public/js/aura.config.js); re-export when it changes.
 - Only technical data reaches the model: station names, error lines, numbers, times, costs. Never message content.

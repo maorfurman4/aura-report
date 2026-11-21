@@ -6,19 +6,11 @@
 // REPORT_SCHEDULED=1 skips a day already built, REPORT_MORNING=1 marks the message as the morning catch-up.
 // Only technical data reaches the model: station names, headlines of errors, numbers, times, costs.
 import { readFileSync } from 'node:fs';
-import { ilDay, ilDayStart, reportDay, fingerprint, botFacts, telegramText } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, fingerprint, botFacts, staleIssues, budget, telegramText } from './lib.mjs';
+import { sb, telegram } from './supabase.mjs';
 
 const env = process.env;
 const { bots } = JSON.parse(readFileSync(new URL('./bots.json', import.meta.url), 'utf8'));
-const URL_ = env.SUPABASE_URL?.replace(/\/$/, ''), KEY = env.SUPABASE_SERVICE_KEY;
-if (!URL_ || !KEY) { console.error('Missing SUPABASE_URL or SUPABASE_SERVICE_KEY'); process.exit(1); }
-const H = { apikey: KEY, Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' };
-async function sb(path, opts = {}) {
-  const r = await fetch(`${URL_}/rest/v1/${path}`, { ...opts, headers: { ...H, ...(opts.headers || {}) }, signal: AbortSignal.timeout(20_000) });
-  if (!r.ok) throw new Error(`Supabase ${r.status} on ${path.split('?')[0]}: ${(await r.text()).slice(0, 200)}`);
-  const text = await r.text();                                    // a write with return=minimal answers with no body
-  return text ? JSON.parse(text) : null;
-}
 
 const now = Date.now();
 const day = env.REPORT_DAY || reportDay(now);                    // 23:30 = today; after midnight (summer, or a late start) = yesterday
@@ -35,6 +27,7 @@ if (env.REPORT_SCHEDULED && !env.REPORT_DAY) {
 const events = (await sb(`bot_events?select=id,ts,bot,kind,text,station_id,status,metrics,run_id&ts=gte.${from}&ts=lt.${to}&order=ts.asc&limit=20000`))
   .filter((r) => ilDay(Date.parse(r.ts)) === day);
 const aiRows = await sb(`ai_usage_daily?select=day,bot,station,model,calls,cost_usd&day=gte.${weekFrom}&day=lte.${day}`);
+const aiMonth = await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${day.slice(0, 7)}-01&day=lte.${day}`);
 let issues = await sb(`bot_issues?select=*&order=id.asc`);
 const lessons = await sb(`bot_lessons?select=bot,lesson,created_at&order=created_at.desc&limit=20`);
 const prev = (await sb(`bot_reports?select=facts&day=eq.${yesterday}`))[0]?.facts || null;
@@ -54,7 +47,9 @@ for (const r of events.filter((e) => e.status === 'error' || e.kind === 'failed'
   if (Date.parse(ts) < Date.parse(it.first_seen)) it.first_seen = ts;
 }
 for (const it of touched.values()) it.count = Object.values(it.day_counts).reduce((a, b) => a + b, 0);
-// a problem whose bot ran a whole day without it, after it was marked fixed, is confirmed
+// a problem not seen for 3 days while its bot kept running closes by itself; seen again later, it "came back"
+const closed = staleIssues(issues, day, new Set(events.map((e) => e.bot)));
+for (const it of closed) Object.assign(it, { status: 'fixed', fixed_at: new Date(now).toISOString(), note: 'נסגרה לבד: 3 ימים בלי להופיע' });
 const openOf = (bot) => issues.filter((i) => i.bot === bot && ['new', 'open', 'regressed'].includes(i.status));
 
 // ---------- the facts per bot ----------
@@ -105,18 +100,17 @@ for (const it of touched.values()) {
     first_seen: it.first_seen, last_seen: it.last_seen, count: it.count, day_counts: it.day_counts, status: it._new ? 'new' : it.status === 'new' ? 'open' : it.status, explanation: it.explanation || null, suggestion: it.suggestion || null, updated_at: new Date().toISOString() };
   await sb('bot_issues?on_conflict=fingerprint', { method: 'POST', body: JSON.stringify(row), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
 }
+for (const it of closed) {
+  await sb(`bot_issues?id=eq.${it.id}`, { method: 'PATCH', body: JSON.stringify({ status: it.status, fixed_at: it.fixed_at, note: it.note, updated_at: new Date().toISOString() }), headers: { Prefer: 'return=minimal' } });
+}
+const money = budget(aiMonth, day, Number(env.REPORT_BUDGET) || 15);
 const cost = usage ? (usage.prompt_tokens * 0.1 + usage.completion_tokens * 0.5) / 1e6 : null;   // gpt-6-luna's price (bot-office/office/lib/prices.mjs)
-const report = { day, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost, created_at: new Date().toISOString() };   // a rerun of the same day shows when it was rebuilt
+const report = { day, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length, closed: closed.length, budget: money }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost, created_at: new Date().toISOString() };   // a rerun of the same day shows when it was rebuilt
 await sb('bot_reports?on_conflict=day', { method: 'POST', body: JSON.stringify(report), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
 console.log(`[report] saved: ${total.runs} runs, ${total.failedRuns} failed, ${touched.size} problems seen, AI $${total.aiCost}`);
 
 // ---------- Telegram: a short summary ----------
-if (env.REPORT_TELEGRAM_TOKEN && env.REPORT_TELEGRAM_CHAT && !env.REPORT_DAY) {
-  const text = telegramText({ day, total, facts, problems: [...touched.values()], summary: analysis?.summary, late: Boolean(env.REPORT_MORNING) });
-  const r = await fetch(`https://api.telegram.org/bot${env.REPORT_TELEGRAM_TOKEN}/sendMessage`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({ chat_id: env.REPORT_TELEGRAM_CHAT, text, parse_mode: 'HTML', disable_web_page_preview: true }),
-  }).catch(() => null);
-  if (r?.ok) await sb(`bot_reports?day=eq.${day}`, { method: 'PATCH', body: JSON.stringify({ telegram: true }), headers: { Prefer: 'return=minimal' } });
-  else console.error('[report] telegram failed', r?.status);
+if (!env.REPORT_DAY) {
+  const text = telegramText({ day, total, facts, problems: [...touched.values()], closed, budget: money, summary: analysis?.summary, late: Boolean(env.REPORT_MORNING) });
+  if (await telegram(text)) await sb(`bot_reports?day=eq.${day}`, { method: 'PATCH', body: JSON.stringify({ telegram: true }), headers: { Prefer: 'return=minimal' } });
 }
