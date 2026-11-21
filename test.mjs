@@ -1,6 +1,6 @@
 // node test.mjs : the report's facts are right
 import assert from 'node:assert/strict';
-import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText, slotsOf, watchAlerts, botOf, budgetAlert } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, staleIssues, budget, weekOf, weeklyText, telegramText, slotsOf, watchAlerts, botOf, budgetAlert, limitOf } from './lib.mjs';
 
 assert.equal(ilDay(Date.parse('2026-11-19T22:30:00Z')), '2026-11-20', 'Israel is UTC+2 in winter');
 assert.equal(new Date(ilDayStart('2026-11-20')).toISOString(), '2026-11-19T22:00:00.000Z');
@@ -53,6 +53,10 @@ const stale = staleIssues([iss('panda', '2026-11-17'), iss('panda', '2026-11-18'
 assert.deepEqual(stale.map((i) => i.last_seen.slice(0, 10)), ['2026-11-17'], '18, 19, 20 are not 3 clean days after the 18th; a bot that did not run closes nothing');
 
 // the month's AI money: spent + the last days' average for the days left
+assert.equal(limitOf({ settings: { budget_usd: 20 } }, undefined), 20, 'the AURA field wins');
+assert.equal(limitOf({ settings: {} }, '12'), 12, 'then REPORT_BUDGET');
+assert.equal(limitOf(null, undefined), 15, 'then 15');
+assert.equal(limitOf({ settings: { budget_usd: 'x' } }, undefined), 15, 'a bad value is ignored');
 const m = budget([{ day: '2026-11-19', cost_usd: 0.2 }, { day: '2026-11-20', cost_usd: 0.4 }, { day: '2026-10-31', cost_usd: 9 }], '2026-11-20', 15);
 assert.equal(m.spent, 0.6, 'only this month');
 assert.equal(m.forecast, Number((0.6 + 0.3 * 10).toFixed(4))); assert.equal(m.over, false);

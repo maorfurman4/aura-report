@@ -5,7 +5,7 @@
 // REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT (optional); REPORT_DAY=YYYY-MM-DD to rebuild a day (no Telegram);
 // REPORT_SCHEDULED=1 skips a day already built, REPORT_MORNING=1 marks the message as the morning catch-up.
 // Only technical data reaches the model: station names, headlines of errors, numbers, times, costs.
-import { botOf, ilDay, ilDayStart, reportDay, fingerprint, botFacts, staleIssues, budget, telegramText } from './lib.mjs';
+import { botOf, ilDay, ilDayStart, reportDay, fingerprint, botFacts, staleIssues, budget, limitOf, telegramText } from './lib.mjs';
 import { sb, telegram } from './supabase.mjs';
 
 const env = process.env;
@@ -104,7 +104,8 @@ for (const it of touched.values()) {
 for (const it of closed) {
   await sb(`bot_issues?id=eq.${it.id}`, { method: 'PATCH', body: JSON.stringify({ status: it.status, fixed_at: it.fixed_at, note: it.note, updated_at: new Date().toISOString() }), headers: { Prefer: 'return=minimal' } });
 }
-const money = budget(aiMonth, day, Number(env.REPORT_BUDGET) || 15);
+const auraCfg = await sb('rpc/aura_config', { method: 'POST', body: JSON.stringify({ p_bot: 'aura' }) }).catch(() => null);   // Maor's budget field
+const money = budget(aiMonth, day, limitOf(auraCfg, env.REPORT_BUDGET));
 const cost = usage ? (usage.prompt_tokens * 0.1 + usage.completion_tokens * 0.5) / 1e6 : null;   // gpt-6-luna's price (bot-office/office/lib/prices.mjs)
 const report = { day, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length, closed: closed.length, budget: money }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost, created_at: new Date().toISOString() };   // a rerun of the same day shows when it was rebuilt
 await sb('bot_reports?on_conflict=day', { method: 'POST', body: JSON.stringify(report), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });

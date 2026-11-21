@@ -5,9 +5,9 @@
 //   ?job=setup          points the report bot's Telegram webhook here (the "✔️ תיקנתי" buttons of the nightly report).
 // Jobs need the x-watch-key header (public.watch_key(), kept in Supabase Vault); Telegram is checked by its secret token.
 // Secrets (Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN,
-// YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15),
+// YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15; Maor's field in AURA wins),
 // RENDER_HEALTH_URL (default the Panda search bot's /health).
-import { botOf, budget, budgetAlert, ilDay, ilDayStart, watchAlerts } from '../lib.mjs';
+import { botOf, budget, budgetAlert, ilDay, ilDayStart, limitOf, watchAlerts } from '../lib.mjs';
 
 const env = (k: string) => Deno.env.get(k) || '';
 const SB = env('SUPABASE_URL'), SK = env('SUPABASE_SERVICE_ROLE_KEY'), TG = env('REPORT_TELEGRAM_TOKEN'), CHAT = env('REPORT_TELEGRAM_CHAT');
@@ -43,7 +43,7 @@ async function watch() {
   const bots = (await sb('bots?select=*&order=sort.asc')).map(botOf);   // the registry (public.bots)
   for (const a of watchAlerts({ bots, events, now })) if (await once(a.key, a.text)) sent.push(a.key);
   // the month's AI budget: 80%, then over
-  const today = ilDay(now), money = budget(await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${today.slice(0, 7)}-01&day=lte.${today}`), today, Number(env('REPORT_BUDGET')) || 15);
+  const today = ilDay(now), money = budget(await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${today.slice(0, 7)}-01&day=lte.${today}`), today, limitOf(await sb('rpc/aura_config', { method: 'POST', body: JSON.stringify({ p_bot: 'aura' }) }).catch(() => null), env('REPORT_BUDGET')));
   const b = budgetAlert(money, today);
   if (b && await once(b.key, b.text)) sent.push(b.key);
   // Render (Panda's search bot, the reels approval): only 07-23, when its own pinger keeps it awake, so this adds no hours
