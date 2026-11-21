@@ -1,6 +1,6 @@
 // node test.mjs : the report's facts are right
 import assert from 'node:assert/strict';
-import { ilDay, ilDayStart, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, normalizeError, fingerprint, runsOf, expectedRuns, productsOf, health, botFacts, telegramText } from './lib.mjs';
 
 assert.equal(ilDay(Date.parse('2026-11-19T22:30:00Z')), '2026-11-20', 'Israel is UTC+2 in winter');
 assert.equal(new Date(ilDayStart('2026-11-20')).toISOString(), '2026-11-19T22:00:00.000Z');
@@ -33,4 +33,18 @@ assert.equal(f.limits, 1);
 assert.deepEqual(f.silentStations, ['card']);
 const early = botFacts(bot, rows, { day: '2026-11-20', now: Date.parse('2026-11-20T10:00:00Z') });
 assert.equal(early.missing, 0, 'a day that is not over misses nothing yet');
+// the day a report covers, whenever GitHub starts it
+assert.equal(reportDay(Date.parse('2026-11-20T21:30:00Z')), '2026-11-20', '23:30 in winter = today');
+assert.equal(reportDay(Date.parse('2026-11-21T00:39:00Z')), '2026-11-20', 'a run 5 hours late = yesterday (the bug of 2026-11-21)');
+assert.equal(reportDay(Date.parse('2026-11-21T05:30:00Z')), '2026-11-20', 'the morning check = yesterday');
+assert.equal(reportDay(Date.parse('2026-07-01T21:30:00Z')), '2026-07-01', '00:30 in summer = yesterday');
+assert.equal(reportDay(Date.parse('2026-11-21T10:30:00Z')), '2026-11-21', 'after noon = today');
+
+const tg = (over) => telegramText({ day: '2026-11-20', total: { runs: 3, failedRuns: 1, aiCost: 0.03 }, facts: [f, { ...f, bot: 'news', name: 'חדשות', health: 100, healthMinus: [] }], ...over });
+assert.ok(tg({ facts: [{ ...f, health: 100, healthMinus: [] }] }).includes('כל 1 הבוטים תקינים'), 'all well = one line');
+const t = tg({ problems: [{ bot: 'panda', station: 'fit', _new: true, title: 'x<y', explanation: 'למה', suggestion: 'מה', file: 'a.js', line: 3, day_counts: { '2026-11-20': 2 } }], late: true });
+assert.ok(t.startsWith('⚠️') && t.includes('🔴 <b>פנדה</b>') && t.includes('🟢 תקינים: חדשות'));
+assert.ok(t.includes('x&lt;y') && t.includes('×2') && t.includes('מה לבדוק: מה (a.js:3)') && !t.includes('localhost'));
+const long = tg({ problems: Array.from({ length: 40 }, () => ({ bot: 'panda', explanation: 'א'.repeat(220), suggestion: 'ב'.repeat(220) })) });
+assert.ok(long.length <= 4000 && long.endsWith('\n…'), 'Telegram\'s limit, cut on a line');
 console.log('ok: report facts');

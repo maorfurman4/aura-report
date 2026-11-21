@@ -8,6 +8,11 @@ export function ilDayStart(day) {
   for (const off of [2, 3]) { const t = guess - off * 3600_000; if (ilDay(t) === day && ilDay(t - 1) !== day) return t; }
   return guess - 2 * 3600_000;
 }
+// the day a report covers: a run before noon in Israel covers yesterday (GitHub can start the 23:30 run hours late)
+export function reportDay(now) {
+  const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', hour12: false }).format(new Date(now))) % 24;
+  return ilDay(h < 12 ? ilDayStart(ilDay(now)) - 1 : now);
+}
 const ilHM = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms));
 
 // the same problem seen again: bot + station + the error text without numbers, ids, quotes, dates and paths
@@ -97,4 +102,29 @@ export function botFacts(bot, rows, { day, ai = [], aiWeek = [], openIssues = []
     productMetrics: products.metrics, errors: errors.length, limits: errors.filter((r) => r.metrics?.limit).length,
     silentStations: silent, health: h.score, healthMinus: h.minus,
   };
+}
+
+// the Telegram summary: one line when all is well, the details only where something is wrong
+export function telegramText({ day, total, facts, problems = [], summary, late = false }) {
+  const esc = (s) => String(s ?? '').replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]));
+  const cut = (s, n) => (String(s).length > n ? `${String(s).slice(0, n)}…` : String(s));
+  const name = Object.fromEntries(facts.map((f) => [f.bot, f.name]));
+  const lines = late ? ['⚠️ הדוח של הלילה לא רץ בזמן; נבנה עכשיו בבדיקת הבוקר', ''] : [];
+  lines.push(`<b>דוח הבוטים · ${day}</b>`, `${total.runs} ריצות · ${total.failedRuns === 1 ? 'אחת נכשלה' : `${total.failedRuns} נכשלו`} · AI ≈ $${total.aiCost.toFixed(2)}`, '');
+  const bad = facts.filter((f) => f.health < 100), ok = facts.filter((f) => f.health === 100);
+  if (!bad.length) lines.push(`🟢 כל ${facts.length} הבוטים תקינים`);
+  for (const f of bad) lines.push(`${f.health >= 90 ? '🟢' : f.health >= 60 ? '🟡' : '🔴'} <b>${esc(f.name)}</b> ${f.health}: ${f.healthMinus.map((m) => esc(m.why)).join(' · ')}`);
+  if (bad.length && ok.length) lines.push(`🟢 תקינים: ${ok.map((f) => esc(f.name)).join(', ')}`);
+  if (problems.length) lines.push('', '<b>בעיות היום</b>');
+  for (const p of problems) {
+    const tag = p._new ? 'חדשה' : p.status === 'regressed' ? 'חזרה' : 'ממשיכה';
+    lines.push(`• <b>${esc(p.title || p.station || 'שגיאה')}</b> (${esc(name[p.bot] || p.bot)}${p.station ? ` · ${esc(p.station)}` : ''} · ${tag} · ×${p.day_counts?.[day] ?? p.count ?? 1})`);
+    if (p.explanation) lines.push(`  ${esc(cut(p.explanation, 220))}`);
+    else if (p.sample) lines.push(`  <code>${esc(cut(p.sample, 160))}</code>`);
+    if (p.suggestion) lines.push(`  מה לבדוק: ${esc(cut(p.suggestion, 220))}${p.file ? ` (${esc(p.file)}${p.line ? `:${p.line}` : ''})` : ''}`);
+  }
+  if (summary) lines.push('', esc(summary));
+  let text = lines.join('\n');
+  if (text.length > 4000) text = `${text.slice(0, text.lastIndexOf('\n', 3950))}\n…`;   // cut on a line: every line closes its own tags
+  return text;
 }

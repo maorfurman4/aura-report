@@ -1,12 +1,14 @@
 # The bots report: every night at 23:30 Israel time in winter (00:30 in summer), and on demand from the office.
+# The morning run (07:30 / 08:30) builds and sends the report only if the night's run did not; a failed run alerts on Telegram.
 name: nightly report
 on:
   schedule:
     - cron: '30 21 * * *'
+    - cron: '30 5 * * *'
   workflow_dispatch:
     inputs:
       day:
-        description: 'Rebuild this Israel day (YYYY-MM-DD); empty = the day that is ending'
+        description: 'Rebuild this Israel day (YYYY-MM-DD); empty = before noon yesterday, after noon today'
         required: false
 concurrency: report
 jobs:
@@ -26,3 +28,12 @@ jobs:
           REPORT_TELEGRAM_TOKEN: ${{ secrets.REPORT_TELEGRAM_TOKEN }}
           REPORT_TELEGRAM_CHAT: ${{ secrets.REPORT_TELEGRAM_CHAT }}
           REPORT_DAY: ${{ inputs.day }}
+          REPORT_SCHEDULED: ${{ github.event_name == 'schedule' && '1' || '' }}
+          REPORT_MORNING: ${{ github.event.schedule == '30 5 * * *' && '1' || '' }}
+      - if: failure()
+        run: >-
+          curl -sS -o /dev/null -X POST "https://api.telegram.org/bot${TOKEN}/sendMessage" -d chat_id="${CHAT}"
+          --data-urlencode text="⚠️ דוח הבוטים נכשל ולא נשלח. הלוג: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+        env:
+          TOKEN: ${{ secrets.REPORT_TELEGRAM_TOKEN }}
+          CHAT: ${{ secrets.REPORT_TELEGRAM_CHAT }}

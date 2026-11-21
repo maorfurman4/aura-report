@@ -2,10 +2,11 @@
 // computes the facts (lib.mjs), keeps every problem in public.bot_issues until it is solved, asks a cheap model to
 // explain the new ones and to suggest savings, writes public.bot_reports, and sends Maor a short Telegram summary.
 // Env: SUPABASE_URL, SUPABASE_SERVICE_KEY (required); OPENAI_API_KEY, REPORT_MODEL (default gpt-6-luna);
-// REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT (optional); REPORT_DAY=YYYY-MM-DD to rebuild a day.
+// REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT (optional); REPORT_DAY=YYYY-MM-DD to rebuild a day (no Telegram);
+// REPORT_SCHEDULED=1 skips a day already built, REPORT_MORNING=1 marks the message as the morning catch-up.
 // Only technical data reaches the model: station names, headlines of errors, numbers, times, costs.
 import { readFileSync } from 'node:fs';
-import { ilDay, ilDayStart, fingerprint, botFacts } from './lib.mjs';
+import { ilDay, ilDayStart, reportDay, fingerprint, botFacts, telegramText } from './lib.mjs';
 
 const env = process.env;
 const { bots } = JSON.parse(readFileSync(new URL('./bots.json', import.meta.url), 'utf8'));
@@ -20,10 +21,15 @@ async function sb(path, opts = {}) {
 }
 
 const now = Date.now();
-const day = env.REPORT_DAY || ilDay(now - 2 * 3600_000);          // run at 23:30 (or 00:30 in summer): the day that is ending
+const day = env.REPORT_DAY || reportDay(now);                    // 23:30 = today; after midnight (summer, or a late start) = yesterday
 const from = new Date(ilDayStart(day)).toISOString(), to = new Date(ilDayStart(day) + 26 * 3600_000).toISOString();
 const yesterday = ilDay(ilDayStart(day) - 12 * 3600_000), weekFrom = ilDay(ilDayStart(day) - 7 * 86_400_000);
 console.log(`[report] ${day} (${from} .. )`);
+// a scheduled run skips a day whose full report is built (the morning check, or a nightly run GitHub started very late)
+if (env.REPORT_SCHEDULED && !env.REPORT_DAY) {
+  const built = (await sb(`bot_reports?select=created_at&day=eq.${day}`))[0];
+  if (built && Date.parse(built.created_at) - ilDayStart(day) > 23 * 3600_000) { console.log(`[report] ${day} is already built`); process.exit(0); }
+}
 
 // ---------- the day's data ----------
 const events = (await sb(`bot_events?select=id,ts,bot,kind,text,station_id,status,metrics,run_id&ts=gte.${from}&ts=lt.${to}&order=ts.asc&limit=20000`))
@@ -106,15 +112,10 @@ console.log(`[report] saved: ${total.runs} runs, ${total.failedRuns} failed, ${t
 
 // ---------- Telegram: a short summary ----------
 if (env.REPORT_TELEGRAM_TOKEN && env.REPORT_TELEGRAM_CHAT && !env.REPORT_DAY) {
-  const esc = (s) => String(s ?? '').replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]));
-  const lines = [`<b>דוח הבוטים · ${day}</b>`, `${total.runs} ריצות · ${total.failedRuns} נכשלו · AI ≈ $${total.aiCost.toFixed(2)}`, '',
-    ...facts.map((f) => `${f.health >= 90 ? '🟢' : f.health >= 60 ? '🟡' : '🔴'} ${esc(f.name)}: ${f.health}${f.healthMinus[0] ? ` · ${esc(f.healthMinus[0].why)}` : ''}`)];
-  if (report.facts.newProblems || report.facts.regressed) lines.push('', `בעיות חדשות: ${report.facts.newProblems} · חזרו: ${report.facts.regressed}`);
-  if (analysis?.summary) lines.push('', esc(analysis.summary));
-  lines.push('', 'המלא: http://localhost:4747/report.html');
+  const text = telegramText({ day, total, facts, problems: [...touched.values()], summary: analysis?.summary, late: Boolean(env.REPORT_MORNING) });
   const r = await fetch(`https://api.telegram.org/bot${env.REPORT_TELEGRAM_TOKEN}/sendMessage`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, signal: AbortSignal.timeout(15_000),
-    body: JSON.stringify({ chat_id: env.REPORT_TELEGRAM_CHAT, text: lines.join('\n'), parse_mode: 'HTML', disable_web_page_preview: true }),
+    body: JSON.stringify({ chat_id: env.REPORT_TELEGRAM_CHAT, text, parse_mode: 'HTML', disable_web_page_preview: true }),
   }).catch(() => null);
   if (r?.ok) await sb(`bot_reports?day=eq.${day}`, { method: 'PATCH', body: JSON.stringify({ telegram: true }), headers: { Prefer: 'return=minimal' } });
   else console.error('[report] telegram failed', r?.status);
