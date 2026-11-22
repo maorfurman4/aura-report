@@ -296,8 +296,9 @@ export function ilToUtc(day, h, m) {
   return t;
 }
 export function dueSlots(times, now, windowMin = 10) {
-  const day = ilDay(now), out = [];
-  for (const t of times || []) {
+  const out = [];
+  // today and yesterday: a slot near midnight (23:57) is still due at 00:02, which is already the next Israel day
+  for (const day of [ilDay(ilDayStart(ilDay(now)) - 1), ilDay(now)]) for (const t of times || []) {
     const hr = HOURLY.exec(t), tm = TIME.exec(t);
     const slots = hr ? Array.from({ length: Math.max(0, hr[2] - hr[1] + 1) }, (_, i) => [Number(hr[1]) + i, 0, null]) : tm ? [[Number(tm[1]), Number(tm[2]), tm[3] || null]] : [];
     for (const [h, m, input] of slots) { const slot = ilToUtc(day, h, m); if (slot <= now && now < slot + windowMin * 60_000) out.push({ slot, input }); }

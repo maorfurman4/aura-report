@@ -160,6 +160,8 @@ console.log('ok: report facts');
   assert.deepEqual(dueSlots(['05:30'], Z('2026-03-27T02:31:00Z')).map((s) => s.slot), [Z('2026-03-27T02:30:00Z')]);
   assert.deepEqual(dueSlots(['05:30'], Z('2026-07-01T02:31:00Z')).map((s) => s.slot), [Z('2026-07-01T02:30:00Z')]);
   assert.deepEqual(dueSlots(['bad', '25:00'], Z('2026-11-22T03:33:00Z')), [], 'bad entries are skipped');
+  // a slot late in the evening is still due after midnight (the call at 00:00 is already the next Israel day)
+  assert.deepEqual(dueSlots(['23:57'], Z('2026-11-22T22:02:00Z')), [{ slot: Z('2026-11-22T21:57:00Z'), input: null }], '23:57 caught at 00:02');
   // RUN_TIMES -> the schedule shape the missed-run check reads
   assert.deepEqual(scheduleOf(['05:30 morning', '22:00 evening', 'hourly 07-23']), { il: ['05:30', '22:00'], hourly: [7, 23] });
   const debi = botOf({ id: 'debi', name: 'דבי', schedule: { il: ['05:30', '22:00'] }, check_missing: true, dispatch: { repo: 'o/debi', file: 'main.yml', input: 'mode' } });
