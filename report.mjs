@@ -5,7 +5,7 @@
 // REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT (optional); REPORT_DAY=YYYY-MM-DD to rebuild a day (no Telegram);
 // REPORT_SCHEDULED=1 skips a day already built, REPORT_MORNING=1 marks the message as the morning catch-up.
 // Only technical data reaches the model: station names, headlines of errors, numbers, times, costs.
-import { botOf, ilDay, ilDayStart, reportDay, fingerprint, botFacts, staleIssues, budget, limitOf, telegramText, cleanSuggestions, knowledgeMd } from './lib.mjs';
+import { botOf, ilDay, ilDayStart, reportDay, scheduledDay, fingerprint, botFacts, staleIssues, budget, limitOf, telegramText, cleanSuggestions, knowledgeMd } from './lib.mjs';
 import { sb, telegram } from './supabase.mjs';
 
 const env = process.env;
@@ -13,7 +13,7 @@ const bots = (await sb('bots?select=*&order=sort.asc')).map(botOf);   // the reg
 if (!bots.length) throw new Error('public.bots is empty: run node office/registry.mjs in bot-office');
 
 const now = Date.now();
-const day = env.REPORT_DAY || reportDay(now);                    // 23:30 = today; after midnight (summer, or a late start) = yesterday
+const day = env.REPORT_DAY || (env.REPORT_SCHEDULED ? scheduledDay(now) : reportDay(now));   // scheduled: the night's day; by hand: after noon = today
 const from = new Date(ilDayStart(day)).toISOString(), to = new Date(ilDayStart(day) + 26 * 3600_000).toISOString();
 const yesterday = ilDay(ilDayStart(day) - 12 * 3600_000), weekFrom = ilDay(ilDayStart(day) - 7 * 86_400_000);
 console.log(`[report] ${day} (${from} .. )`);

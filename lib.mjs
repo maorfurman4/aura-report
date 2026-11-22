@@ -13,6 +13,12 @@ export function reportDay(now) {
   const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', hour12: false }).format(new Date(now))) % 24;
   return ilDay(h < 12 ? ilDayStart(ilDay(now)) - 1 : now);
 }
+// a scheduled run (AURA at 23:30, the 07:30 check, GitHub's fallback cron) builds the night's day: today from 23:00,
+// else yesterday. A fallback GitHub starts hours late (15:29 on 2026-11-22) then finds yesterday built and stops.
+export function scheduledDay(now) {
+  const h = Number(new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', hour12: false }).format(new Date(now))) % 24;
+  return ilDay(h >= 23 ? now : ilDayStart(ilDay(now)) - 1);
+}
 const ilHM = (ms) => new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Jerusalem', hour: '2-digit', minute: '2-digit', hour12: false }).format(new Date(ms));
 
 // the same problem seen again: bot + station + the error text without numbers, ids, quotes, dates and paths
@@ -163,7 +169,7 @@ export function watchAlerts({ bots, events, now, graceH = 3 }) {
     if (!b.checkMissing || !b.schedule) continue;
     const ran = b.schedule.hourly ? rows.filter((r) => b.pipelines[0].includes(r.station_id)) : rows;   // panda: the deals runs, not searches
     for (const slot of slotsOf(b.schedule, now)) {
-      if (slot + graceH * 3600_000 > now || slot < now - 24 * 3600_000) continue;
+      if (slot + graceH * 3600_000 > now || slot < now - 24 * 3600_000 || slot < (b.scheduleSince || 0)) continue;   // a time added today is not owed yesterday
       if (ran.some((r) => { const t = Date.parse(r.ts); return t >= slot - 15 * 60_000 && t <= slot + graceH * 3600_000; })) continue;
       out.push({ key: `miss|${b.bot}|${new Date(slot).toISOString()}`, text: `🚨 <b>${esc(b.name)}</b>: הריצה של ${ilHM(slot)} לא קרתה (עברו ${graceH} שעות)` });
     }
@@ -339,4 +345,10 @@ export async function runSchedule(jobs, io) {
   return out;
 }
 // the missed-run check reads RUN_TIMES for the switched-on bots
-export const withAuraTimes = (bots, times) => bots.map((b) => (times[b.bot] ? { ...b, schedule: scheduleOf(times[b.bot]) } : b));
+export const withAuraTimes = (bots, times, since = {}) => bots.map((b) => (times[b.bot] ? { ...b, schedule: scheduleOf(times[b.bot]), scheduleSince: since[b.bot] || 0 } : b));
+// bot_settings rows -> {bot: ms of the latest switch or times change}: the missed-run check skips slots before it
+export function auraSinceOf(settings) {
+  const out = {};
+  for (const r of settings || []) { const t = Date.parse(r.updated_at); if (t > (out[r.bot] || 0)) out[r.bot] = t; }
+  return out;
+}
