@@ -3,11 +3,14 @@
 //                       webhook of Yahli or finance, a report that was not built by the morning. Each alert is sent once.
 //   ?job=dispatch&kind= nightly | morning | weekly: starts the report workflow on GitHub at the exact time.
 //   ?job=setup          points the report bot's Telegram webhook here (the "✔️ תיקנתי" buttons of the nightly report).
+//   ?job=schedule       every 5 minutes (pg_cron aura-schedule): the central scheduler. Starts a GitHub-dispatched bot at
+//                       Maor's RUN_TIMES, only while its AURA_SCHEDULES switch is on and it is not paused; each (bot, slot)
+//                       once (aura_dispatches). All switches off = {dispatched: 0}.
 // Jobs need the x-watch-key header (public.watch_key(), kept in Supabase Vault); Telegram is checked by its secret token.
 // Secrets (Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN,
 // YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15; Maor's field in AURA wins),
 // RENDER_HEALTH_URL (default the Panda search bot's /health).
-import { botOf, budget, budgetAlert, ilDay, ilDayStart, limitOf, watchAlerts } from '../lib.mjs';
+import { auraTimesOf, botOf, budget, budgetAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, withAuraTimes } from '../lib.mjs';
 
 const env = (k: string) => Deno.env.get(k) || '';
 const SB = env('SUPABASE_URL'), SK = env('SUPABASE_SERVICE_ROLE_KEY'), TG = env('REPORT_TELEGRAM_TOKEN'), CHAT = env('REPORT_TELEGRAM_CHAT');
@@ -40,7 +43,9 @@ async function once(key: string, text: string) {
 async function watch() {
   const now = Date.now(), sent: string[] = [], hooks: Record<string, string> = {};
   const events = await sb(`bot_events?select=ts,bot,kind,text,station_id,status&ts=gte.${new Date(now - 28 * 3600_000).toISOString()}&order=ts.asc&limit=20000`);
-  const bots = (await sb('bots?select=*&order=sort.asc')).map(botOf);   // the registry (public.bots)
+  const reg = (await sb('bots?select=*&order=sort.asc')).map(botOf);   // the registry (public.bots)
+  // a bot AURA schedules is checked against Maor's RUN_TIMES, not the registry's schedule
+  const bots = withAuraTimes(reg, auraTimesOf(await schedSettings(), defaultsOf(reg)));
   for (const a of watchAlerts({ bots, events, now })) if (await once(a.key, a.text)) sent.push(a.key);
   // the month's AI budget: 80%, then over
   const today = ilDay(now), money = budget(await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${today.slice(0, 7)}-01&day=lte.${today}`), today, limitOf(await sb('rpc/aura_config', { method: 'POST', body: JSON.stringify({ p_bot: 'aura' }) }).catch(() => null), env('REPORT_BUDGET')));
@@ -84,6 +89,29 @@ async function dispatch(kind: string) {
   return { ok: r.ok, status: r.status };
 }
 
+// the central scheduler's settings (the switch and the times) and each bot's default times (bots.dispatch.times)
+const schedSettings = () => sb('bot_settings?select=bot,key,value&key=in.(AURA_SCHEDULES,RUN_TIMES)');
+const defaultsOf = (bots: any[]) => Object.fromEntries(bots.filter((b) => b.dispatch?.times).map((b) => [b.bot, b.dispatch.times]));
+
+async function schedule() {
+  const now = Date.now(), bots = (await sb('bots?select=*&order=sort.asc')).map(botOf);
+  const jobs = scheduleJobs({ bots, settings: await schedSettings(), defaults: defaultsOf(bots), now });
+  const r = await runSchedule(jobs, {
+    // the primary key (bot, slot) is the lock: only a fresh insert dispatches
+    insert: async (j: any) => Boolean((await sb('aura_dispatches?on_conflict=bot,slot', { method: 'POST', body: JSON.stringify({ bot: j.bot, slot: new Date(j.slot).toISOString() }), headers: { Prefer: 'resolution=ignore-duplicates,return=representation' } }))?.length),
+    dispatch: async (j: any) => {
+      const res = await fetch(`https://api.github.com/repos/${j.dispatch.repo}/actions/workflows/${j.dispatch.file}/dispatches`, {
+        method: 'POST', headers: { Authorization: `Bearer ${env('GH_DISPATCH_TOKEN')}`, Accept: 'application/vnd.github+json', 'User-Agent': 'aura-watch' },
+        body: JSON.stringify(dispatchBody(j.dispatch, j.input)), signal: AbortSignal.timeout(15_000),
+      });
+      return { ok: res.ok, status: res.status };
+    },
+    record: (j: any, res: any) => sb(`aura_dispatches?bot=eq.${encodeURIComponent(j.bot)}&slot=eq.${encodeURIComponent(new Date(j.slot).toISOString())}`, { method: 'PATCH', body: JSON.stringify({ ok: res.ok, status: res.status }), headers: { Prefer: 'return=minimal' } }),
+    alert: (key: string, text: string) => once(key, text),
+  });
+  return { ok: true, jobs: jobs.length, ...r };
+}
+
 // a "✔️ תיקנתי" button of the nightly report: the problem is marked fixed (only from Maor's chat)
 async function button(update: any) {
   const q = update.callback_query;
@@ -117,6 +145,7 @@ Deno.serve(async (req) => {
     if (job === 'watch') return json(await watch());
     if (job === 'dispatch') return json(await dispatch(u.searchParams.get('kind') || 'nightly'));
     if (job === 'setup') return json(await setup(`${SB}/functions/v1/aura-watch`));
+    if (job === 'schedule') return json(await schedule());
     return json({ ok: false, why: 'unknown job' }, 400);
   } catch (e) {
     console.error('[watch]', e);
