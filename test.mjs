@@ -202,3 +202,26 @@ console.log('ok: report facts');
   assert.deepEqual(withAuraTimes([news], {})[0].schedule, { utc: ['04:00'] }, 'switch off -> the registry schedule');
   console.log('ok: scheduler');
 }
+
+// 2026-11-22: two false Telegram messages
+{
+  const { scheduledDay, auraSinceOf, withAuraTimes } = await import('./lib.mjs');
+  // a run time Maor just added is not checked on the days before he added it ("15:32 did not happen" at 15:30)
+  const since = auraSinceOf([
+    { bot: 'debi', key: 'AURA_SCHEDULES', value: true, updated_at: '2026-11-22T13:21:00Z' },
+    { bot: 'debi', key: 'RUN_TIMES', value: [], updated_at: '2026-11-22T13:28:00Z' },
+  ]);
+  assert.deepEqual(since, { debi: Date.parse('2026-11-22T13:28:00Z') }, 'the latest change of the switch or the times');
+  const times = { debi: ['05:30 morning', '15:32 evening', '22:00 evening'] };
+  const ran = [ev('debi', '21T03:31:00', 'writer', 'done'), ev('debi', '21T20:01:00', 'writer', 'done'), ev('debi', '22T03:31:00', 'writer', 'done')];
+  const keys = (bots, now) => watchAlerts({ bots, now: Date.parse(now), events: ran }).map((a) => a.key);
+  assert.deepEqual(keys(withAuraTimes([wb[0]], times), '2026-11-22T13:30:00Z'), ['miss|debi|2026-11-21T13:32:00.000Z'], 'without the change time: the false alarm');
+  assert.deepEqual(keys(withAuraTimes([wb[0]], times, since), '2026-11-22T13:30:00Z'), [], 'yesterday 15:32 is before the change');
+  assert.deepEqual(keys(withAuraTimes([wb[0]], times, since), '2026-11-22T17:00:00Z'), ['miss|debi|2026-11-22T13:32:00.000Z'], 'a slot after the change is still checked');
+  // a scheduled report run builds the night's day; a GitHub fallback started hours late never builds a half day
+  assert.equal(scheduledDay(Date.parse('2026-11-20T21:30:00Z')), '2026-11-20', '23:30 = today');
+  assert.equal(scheduledDay(Date.parse('2026-11-21T05:30:00Z')), '2026-11-20', 'the 07:30 morning check = yesterday');
+  assert.equal(scheduledDay(Date.parse('2026-11-22T13:29:00Z')), '2026-11-21', 'the 07:30 fallback GitHub started at 15:29 = yesterday (already built, so skipped)');
+  assert.equal(scheduledDay(Date.parse('2026-07-01T21:30:00Z')), '2026-07-01', '00:30 in summer = yesterday');
+  console.log('ok: false alarms');
+}

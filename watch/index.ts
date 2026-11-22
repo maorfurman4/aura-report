@@ -10,7 +10,7 @@
 // Secrets (Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN,
 // YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15; Maor's field in AURA wins),
 // RENDER_HEALTH_URL (default the Panda search bot's /health).
-import { auraTimesOf, botOf, budget, budgetAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, withAuraTimes } from '../lib.mjs';
+import { auraSinceOf, auraTimesOf, botOf, budget, budgetAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, withAuraTimes } from '../lib.mjs';
 
 const env = (k: string) => Deno.env.get(k) || '';
 const SB = env('SUPABASE_URL'), SK = env('SUPABASE_SERVICE_ROLE_KEY'), TG = env('REPORT_TELEGRAM_TOKEN'), CHAT = env('REPORT_TELEGRAM_CHAT');
@@ -45,7 +45,8 @@ async function watch() {
   const events = await sb(`bot_events?select=ts,bot,kind,text,station_id,status&ts=gte.${new Date(now - 28 * 3600_000).toISOString()}&order=ts.asc&limit=20000`);
   const reg = (await sb('bots?select=*&order=sort.asc')).map(botOf);   // the registry (public.bots)
   // a bot AURA schedules is checked against Maor's RUN_TIMES, not the registry's schedule
-  const bots = withAuraTimes(reg, auraTimesOf(await schedSettings(), defaultsOf(reg)));
+  const set = await schedSettings();
+  const bots = withAuraTimes(reg, auraTimesOf(set, defaultsOf(reg)), auraSinceOf(set));
   for (const a of watchAlerts({ bots, events, now })) if (await once(a.key, a.text)) sent.push(a.key);
   // the month's AI budget: 80%, then over
   const today = ilDay(now), money = budget(await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${today.slice(0, 7)}-01&day=lte.${today}`), today, limitOf(await sb('rpc/aura_config', { method: 'POST', body: JSON.stringify({ p_bot: 'aura' }) }).catch(() => null), env('REPORT_BUDGET')));
@@ -90,7 +91,7 @@ async function dispatch(kind: string) {
 }
 
 // the central scheduler's settings (the switch and the times) and each bot's default times (bots.dispatch.times)
-const schedSettings = () => sb('bot_settings?select=bot,key,value&key=in.(AURA_SCHEDULES,RUN_TIMES)');
+const schedSettings = () => sb('bot_settings?select=bot,key,value,updated_at&key=in.(AURA_SCHEDULES,RUN_TIMES)');
 const defaultsOf = (bots: any[]) => Object.fromEntries(bots.filter((b) => b.dispatch?.times).map((b) => [b.bot, b.dispatch.times]));
 
 async function schedule() {
