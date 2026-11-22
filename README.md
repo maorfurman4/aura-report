@@ -26,6 +26,11 @@ Secrets (Supabase > Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TEL
 (fine-grained, this repo only, Actions: read and write), YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN.
 Deploy with `watch/index.ts` and `lib.mjs` (the function imports it from `..`). It also alerts at 80% of the month's AI
 budget and once it is over (REPORT_BUDGET, default $15), and when Render (Panda's search bot) does not answer, 07-23.
+- **Central scheduler** (`?job=schedule`, pg_cron `aura-schedule` every 5 minutes, bot-office `office/sql/2026-11-22-scheduler.sql`):
+  starts a GitHub-dispatched bot (`bots.dispatch`: repo, workflow file, input name, fixed inputs, default times) at Maor's
+  `RUN_TIMES` (Israel time) only while its `AURA_SCHEDULES` setting is on and it is not paused; each (bot, slot) once
+  (`aura_dispatches`). The watch's missed-run check follows `RUN_TIMES` for those bots. Needs `GH_DISPATCH_TOKEN` to reach
+  the bot repos (Actions: read and write on each).
 - The bots come from the registry, Supabase `public.bots` (bot-office `office/sql/2026-11-21-bots-registry.sql`), filled
   from the office manifest by `node office/registry.mjs` in bot-office; run it again when a bot's stations or schedule change.
 - Only technical data reaches the model: station names, error lines, numbers, times, costs. Never message content.

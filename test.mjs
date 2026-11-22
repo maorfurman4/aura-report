@@ -145,3 +145,58 @@ console.log('ok: report facts');
   assert.equal(cleanSuggestions(Array(9).fill({ bot: 'mail', text: 'x' }), kbots).length, 6);
   console.log('ok: knowledge file');
 }
+
+// the central scheduler (stage 7): AURA starts GitHub-dispatched bots at Maor's RUN_TIMES, only when the switch is on
+{
+  const { dueSlots, scheduleOf, scheduleJobs, dispatchBody, runSchedule, auraTimesOf, withAuraTimes } = await import('./lib.mjs');
+  const Z = (iso) => Date.parse(iso);
+  // 05:33 Israel (winter) -> the 05:30 slot with its input tag; 05:41 -> none (10-minute window)
+  assert.deepEqual(dueSlots(['05:30 morning', '22:00 evening'], Z('2026-11-22T03:33:00Z')), [{ slot: Z('2026-11-22T03:30:00Z'), input: 'morning' }]);
+  assert.deepEqual(dueSlots(['05:30 morning'], Z('2026-11-22T03:41:00Z')), []);
+  assert.deepEqual(dueSlots(['05:30 morning'], Z('2026-11-22T03:29:59Z')), [], 'not before the slot');
+  assert.deepEqual(dueSlots(['hourly 07-23'], Z('2026-11-22T07:02:00Z')), [{ slot: Z('2026-11-22T07:00:00Z'), input: null }], '09:02 -> the 09:00 slot');
+  assert.deepEqual(dueSlots(['hourly 07-23'], Z('2026-11-22T22:02:00Z')), [], 'midnight is outside 07-23');
+  // daylight saving: 05:30 stays 05:30 Israel time on the change day (2026-03-27) and in summer
+  assert.deepEqual(dueSlots(['05:30'], Z('2026-03-27T02:31:00Z')).map((s) => s.slot), [Z('2026-03-27T02:30:00Z')]);
+  assert.deepEqual(dueSlots(['05:30'], Z('2026-07-01T02:31:00Z')).map((s) => s.slot), [Z('2026-07-01T02:30:00Z')]);
+  assert.deepEqual(dueSlots(['bad', '25:00'], Z('2026-11-22T03:33:00Z')), [], 'bad entries are skipped');
+  // RUN_TIMES -> the schedule shape the missed-run check reads
+  assert.deepEqual(scheduleOf(['05:30 morning', '22:00 evening', 'hourly 07-23']), { il: ['05:30', '22:00'], hourly: [7, 23] });
+  const debi = botOf({ id: 'debi', name: 'דבי', schedule: { il: ['05:30', '22:00'] }, check_missing: true, dispatch: { repo: 'o/debi', file: 'main.yml', input: 'mode' } });
+  const panda = botOf({ id: 'panda', name: 'פנדה', schedule: { hourly: [7, 23] }, dispatch: { repo: 'o/panda', file: 'daily-deals.yml', inputs: { force: 'false' } } });
+  const news = botOf({ id: 'news', name: 'חדשות', schedule: { utc: ['04:00'] }, dispatch: { repo: 'o/news', file: 'main.yml' } });
+  const paused = botOf({ id: 'mail', name: 'מייל', paused: true, dispatch: { repo: 'o/mail', file: 'x.yml' } });
+  const settings = [
+    { bot: 'debi', key: 'AURA_SCHEDULES', value: true }, { bot: 'debi', key: 'RUN_TIMES', value: ['05:30 morning', '22:00 evening'] },
+    { bot: 'panda', key: 'AURA_SCHEDULES', value: true },   // no RUN_TIMES row: the schema default is the bot's real schedule
+    { bot: 'news', key: 'RUN_TIMES', value: ['05:30'] },     // times without the switch: nothing
+    { bot: 'mail', key: 'AURA_SCHEDULES', value: true }, { bot: 'mail', key: 'RUN_TIMES', value: ['05:30'] },   // paused: nothing
+  ];
+  const defaults = { panda: ['hourly 07-23'], debi: ['05:30 morning', '22:00 evening'] };
+  assert.deepEqual(auraTimesOf(settings, defaults), { debi: ['05:30 morning', '22:00 evening'], panda: ['hourly 07-23'], mail: ['05:30'] }, 'only switched-on bots (pause is checked by scheduleJobs)');
+  const jobs = scheduleJobs({ bots: [debi, panda, news, paused], settings, defaults, now: Z('2026-11-22T03:33:00Z') });
+  assert.deepEqual(jobs.map((j) => [j.bot, j.input]), [['debi', 'morning']], '05:33: Debi only (panda starts at 07:00)');
+  assert.equal(scheduleJobs({ bots: [debi], settings: [{ bot: 'debi', key: 'AURA_SCHEDULES', value: false }], defaults, now: Z('2026-11-22T03:33:00Z') }).length, 0, 'switch off -> nothing');
+  assert.deepEqual(dispatchBody(debi.dispatch, 'morning'), { ref: 'main', inputs: { mode: 'morning' } });
+  assert.deepEqual(dispatchBody(panda.dispatch, null), { ref: 'main', inputs: { force: 'false' } });
+  assert.deepEqual(dispatchBody({ repo: 'o/x', file: 'y.yml' }, 'tag'), { ref: 'main' }, 'a tag without an input name is dropped');
+  // each (bot, slot) is dispatched once: a second run in the same window inserts nothing and dispatches nothing
+  const seen = new Set(), calls = [], alerts = [];
+  const io = {
+    insert: async (j) => { const k = `${j.bot}|${j.slot}`; if (seen.has(k)) return false; seen.add(k); return true; },
+    dispatch: async (j) => { calls.push(j.bot); return { ok: true, status: 204 }; },
+    record: async () => {}, alert: async (k) => { alerts.push(k); },
+  };
+  assert.deepEqual(await runSchedule(jobs, io), { dispatched: 1, skipped: 0, failed: 0 });
+  assert.deepEqual(await runSchedule(jobs, io), { dispatched: 0, skipped: 1, failed: 0 });
+  assert.deepEqual(calls, ['debi']);
+  // a failed dispatch -> a once-alert, counted
+  const bad = { ...io, insert: async () => true, dispatch: async () => ({ ok: false, status: 404 }) };
+  assert.deepEqual(await runSchedule(jobs, bad), { dispatched: 0, skipped: 0, failed: 1 });
+  assert.equal(alerts.length, 1);
+  // the missed-run check follows RUN_TIMES when the switch is on
+  const moved = withAuraTimes([debi], { debi: ['06:15 morning'] });
+  assert.deepEqual(moved[0].schedule, { il: ['06:15'] });
+  assert.deepEqual(withAuraTimes([news], {})[0].schedule, { utc: ['04:00'] }, 'switch off -> the registry schedule');
+  console.log('ok: scheduler');
+}

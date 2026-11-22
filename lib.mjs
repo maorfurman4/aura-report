@@ -46,7 +46,7 @@ export function runsOf(rows, gapMs = 5 * 60_000) {
 // a row of public.bots (the registry, filled from the office manifest by bot-office/office/registry.mjs) in the shape
 // the report and the watch use; a paused bot expects no runs
 export const botOf = (r) => ({ bot: r.id, name: r.name, repo: r.repo, schedule: r.schedule, hours: r.hours, pipelines: r.pipelines || [],
-  stations: r.stations || [], checkMissing: Boolean(r.check_missing && !r.paused), paused: Boolean(r.paused), host: r.host || null, settings: r.settings || [] });
+  stations: r.stations || [], checkMissing: Boolean(r.check_missing && !r.paused), paused: Boolean(r.paused), host: r.host || null, settings: r.settings || [], dispatch: r.dispatch || null });
 
 // how many runs a bot's schedule expects on a day (only bots with a fixed schedule: webhook bots expect none)
 export function expectedRuns(bot, day) {
@@ -282,3 +282,60 @@ export function knowledgeMd({ day, builtAt, bots, week = [], issues = [], change
   if (lessons.length) out.push('', '## שיעורים', ...lessons.slice(0, 10).map((l) => `- ${l.bot ? `${l.bot}: ` : ''}${l.lesson}`));
   return `${out.join('\n')}\n`;
 }
+
+// ---- the central scheduler (stage 7, bot-office docs/superpowers/plans/2026-11-22-aura-remaining.md, Part 4) ----
+// Maor's RUN_TIMES (settings, Israel time: "HH:MM [input tag]" | "hourly HH-HH") start a GitHub-dispatched bot, only
+// while its AURA_SCHEDULES switch is on and it is not paused. Each (bot, slot) is dispatched once (aura_dispatches).
+const TIME = /^([01]\d|2[0-3]):([0-5]\d)(?: (\w{1,20}))?$/, HOURLY = /^hourly ([01]\d|2[0-3])-([01]\d|2[0-3])$/;
+// Israel wall time on an Israel day -> UTC ms, with the offset of that very moment (daylight saving safe)
+export function ilToUtc(day, h, m) {
+  const start = ilDayStart(day), want = h * 60 + m;
+  const p = (t) => { const [hh, mm] = ilHM(t).split(':').map(Number); return hh * 60 + mm; };
+  let t = start + want * 60_000;
+  for (let i = 0; i < 2; i++) t += (want - p(t)) * 60_000;   // a DST day: the wall clock jumped, so correct by the difference
+  return t;
+}
+export function dueSlots(times, now, windowMin = 10) {
+  const day = ilDay(now), out = [];
+  for (const t of times || []) {
+    const hr = HOURLY.exec(t), tm = TIME.exec(t);
+    const slots = hr ? Array.from({ length: Math.max(0, hr[2] - hr[1] + 1) }, (_, i) => [Number(hr[1]) + i, 0, null]) : tm ? [[Number(tm[1]), Number(tm[2]), tm[3] || null]] : [];
+    for (const [h, m, input] of slots) { const slot = ilToUtc(day, h, m); if (slot <= now && now < slot + windowMin * 60_000) out.push({ slot, input }); }
+  }
+  return out;
+}
+export function scheduleOf(times) {
+  const il = [], hourly = [];
+  for (const t of times || []) { const hr = HOURLY.exec(t), tm = TIME.exec(t); if (hr) hourly.push([Number(hr[1]), Number(hr[2])]); else if (tm) il.push(`${tm[1]}:${tm[2]}`); }
+  return { ...(il.length ? { il } : {}), ...(hourly.length ? { hourly: [Math.min(...hourly.map((x) => x[0])), Math.max(...hourly.map((x) => x[1]))] } : {}) };
+}
+// bot_settings rows -> {bot: RUN_TIMES} for the bots whose switch is on (no RUN_TIMES row = the schema default)
+export function auraTimesOf(settings, defaults = {}) {
+  const by = {};
+  for (const r of settings || []) (by[r.bot] ||= {})[r.key] = r.value;
+  return Object.fromEntries(Object.entries(by).filter(([, s]) => s.AURA_SCHEDULES === true)
+    .map(([bot, s]) => [bot, Array.isArray(s.RUN_TIMES) ? s.RUN_TIMES : defaults[bot]]).filter(([, t]) => Array.isArray(t) && t.length));
+}
+export function scheduleJobs({ bots, settings, defaults = {}, now }) {
+  const times = auraTimesOf(settings, defaults);
+  return bots.filter((b) => times[b.bot] && !b.paused && b.dispatch?.repo && b.dispatch?.file)
+    .flatMap((b) => dueSlots(times[b.bot], now).map(({ slot, input }) => ({ bot: b.bot, name: b.name, slot, input, dispatch: b.dispatch })));
+}
+export const dispatchBody = (d, input) => {
+  const inputs = { ...(d.inputs || {}), ...(input && d.input ? { [d.input]: input } : {}) };
+  return { ref: 'main', ...(Object.keys(inputs).length ? { inputs } : {}) };
+};
+// io: insert(job) -> true only for a fresh (bot, slot) row; dispatch(job) -> {ok, status}; record(job, res); alert(key, text)
+export async function runSchedule(jobs, io) {
+  const out = { dispatched: 0, skipped: 0, failed: 0 };
+  for (const j of jobs) {
+    if (!(await io.insert(j))) { out.skipped++; continue; }
+    const r = await io.dispatch(j).catch((e) => ({ ok: false, status: 0, error: String(e?.message || e) }));
+    await io.record(j, r);
+    if (r.ok) out.dispatched++;
+    else { out.failed++; await io.alert(`sched|${j.bot}|${new Date(j.slot).toISOString()}`, `🚨 <b>${j.name}</b>: AURA לא הצליח להפעיל את הריצה של ${ilHM(j.slot)} ב-GitHub (${r.status || r.error || '?'}).`); }
+  }
+  return out;
+}
+// the missed-run check reads RUN_TIMES for the switched-on bots
+export const withAuraTimes = (bots, times) => bots.map((b) => (times[b.bot] ? { ...b, schedule: scheduleOf(times[b.bot]) } : b));
