@@ -102,3 +102,46 @@ assert.equal(budgetAlert({ spent: 11, forecast: 14, limit: 15 }, '2026-11-21'), 
 assert.equal(budgetAlert({ spent: 12, forecast: 20, limit: 15 }, '2026-11-21').key, 'budget|2026-11|80');
 assert.equal(budgetAlert({ spent: 15.5, forecast: 20, limit: 15 }, '2026-11-21').key, 'budget|2026-11|over');
 console.log('ok: report facts');
+
+// stage 6: the knowledge file and the setting actions
+{
+  const { knowledgeMd, cleanSuggestions } = await import('./lib.mjs');
+  const kbots = [
+    botOf({ id: 'debi', name: 'דבי', repo: 'maorfurman4/bot-debi-briefing', host: 'GitHub Actions', schedule: { il: ['05:30'] }, pipelines: [['calendar', 'writer']], stations: [{ id: 'calendar', name: 'המזכירה', does: 'יומנים' }, { id: 'writer', name: 'הכותבת', does: 'שולחת' }] }),
+    botOf({ id: 'mail', name: 'מייל', repo: 'maorfurman4/bot-mailbox-sync', pipelines: [['smart']], stations: [{ id: 'smart', name: 'הממיין', does: 'AI' }], settings: [{ key: 'DAILY_LIMIT', kind: 'int', min: 0, max: 20 }] }),
+  ];
+  const day = '2026-11-21', ts = (d) => `${d}T08:00:00Z`;
+  const md = knowledgeMd({
+    day, builtAt: Date.parse('2026-11-21T21:30:00Z'), bots: kbots,
+    week: [{ day: '2026-11-20', bots: [{ bot: 'debi', runs: 2, failedRuns: 1 }] }, { day, bots: [{ bot: 'debi', runs: 2, failedRuns: 0, health: 90, costPerProduct: 0.01 }] }],
+    issues: [{ bot: 'debi', title: 'שגיאת יומן', count: 3, file: 'briefing.py', line: 40, status: 'open', last_seen: ts('2026-11-20') },
+      { bot: 'debi', title: 'ישנה', count: 9, status: 'open', last_seen: ts('2026-11-01') }],
+    changes: [{ id: 1, ts: ts('2026-11-19'), actor: 'maor', bot: 'mail', key: 'DAILY_LIMIT', old: 3, new: 5 },
+      { id: 2, ts: ts('2026-11-19'), actor: 'maor', bot: 'mail', key: 'DAILY_LIMIT', old: 5, new: 3, undo_of: 1 }],
+    ai: { week: [{ bot: 'mail', cost_usd: 0.5 }], month: [{ bot: 'mail', cost_usd: 1.25 }] }, money: { spent: 4, limit: 15, forecast: 9 },
+    suggestions: [{ bot: 'mail', kind: 'cost', text: 'להוריד מגבלה', action: { key: 'DAILY_LIMIT', value: 2 } }],
+    lessons: [{ bot: 'debi', lesson: 'ICS מחזיר 500 בלילה' }],
+  });
+  assert.match(md, /^# AURA/);
+  assert.ok(md.includes('## דבי (debi)'));
+  assert.ok(md.includes('- שגיאת יומן (3) briefing.py:40 — פתוחה'), 'an issue of this week with its place');
+  assert.ok(!md.includes('ישנה'), 'an issue last seen weeks ago is not "this week"');
+  assert.ok(md.includes('השבוע: 4 ריצות, 1 נכשלו (75% הצלחה) · ציון היום 90'));
+  assert.ok(md.includes('DAILY_LIMIT: 3→5 (maor) (בוטל)'), 'an undone change is marked, the undo row itself is not listed');
+  assert.ok(md.includes('עלות AI: השבוע $0.50 · החודש $1.25'));
+  assert.ok(md.includes('[הגדרה DAILY_LIMIT → 2]'));
+  assert.ok(md.includes('ICS מחזיר 500 בלילה'));
+  // 7 big bots stay short
+  const big = Array.from({ length: 7 }, (_, n) => botOf({ id: `b${n}`, name: `b${n}`, pipelines: [Array.from({ length: 11 }, (_, k) => `s${k}`)], stations: Array.from({ length: 11 }, (_, k) => ({ id: `s${k}`, name: 's', does: 'd' })) }));
+  const many = big.flatMap((b) => Array.from({ length: 20 }, () => ({ bot: b.bot, title: 'x', count: 1, status: 'open', last_seen: ts(day) })));
+  const chs = big.flatMap((b, n) => Array.from({ length: 20 }, (_, k) => ({ id: n * 100 + k + 1, ts: ts(day), actor: 'maor', bot: b.bot, key: 'K', old: 1, new: 2 })));
+  const sgs = big.slice(0, 2).flatMap((b) => Array.from({ length: 3 }, () => ({ bot: b.bot, text: "t" })));   // the report keeps 6 in all
+  const lines = knowledgeMd({ day, builtAt: Date.now(), bots: big, issues: many, changes: chs, suggestions: sgs, lessons: Array(20).fill({ lesson: 'l' }) }).split('\n').length;
+  assert.ok(lines <= 250, `knowledge file is ${lines} lines`);
+  // setting actions survive only for a key the bot has
+  const cs = cleanSuggestions([{ bot: 'mail', text: 'a', action: { key: 'DAILY_LIMIT', value: 5 } }, { bot: 'mail', text: 'b', action: { key: 'NOPE', value: 1 } }, { bot: 'debi', text: 'c', action: { key: 'DAILY_LIMIT', value: 1 } }, { bot: 'mail', text: 'd', action: { key: 'DAILY_LIMIT' } }], kbots);
+  assert.deepEqual(cs.map((s) => s.action || null), [{ key: 'DAILY_LIMIT', value: 5 }, null, null, null]);
+  assert.equal(cleanSuggestions(null, kbots).length, 0);
+  assert.equal(cleanSuggestions(Array(9).fill({ bot: 'mail', text: 'x' }), kbots).length, 6);
+  console.log('ok: knowledge file');
+}

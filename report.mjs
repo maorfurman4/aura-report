@@ -5,7 +5,7 @@
 // REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT (optional); REPORT_DAY=YYYY-MM-DD to rebuild a day (no Telegram);
 // REPORT_SCHEDULED=1 skips a day already built, REPORT_MORNING=1 marks the message as the morning catch-up.
 // Only technical data reaches the model: station names, headlines of errors, numbers, times, costs.
-import { botOf, ilDay, ilDayStart, reportDay, fingerprint, botFacts, staleIssues, budget, limitOf, telegramText } from './lib.mjs';
+import { botOf, ilDay, ilDayStart, reportDay, fingerprint, botFacts, staleIssues, budget, limitOf, telegramText, cleanSuggestions, knowledgeMd } from './lib.mjs';
 import { sb, telegram } from './supabase.mjs';
 
 const env = process.env;
@@ -27,10 +27,13 @@ if (env.REPORT_SCHEDULED && !env.REPORT_DAY) {
 const events = (await sb(`bot_events?select=id,ts,bot,kind,text,station_id,status,metrics,run_id&ts=gte.${from}&ts=lt.${to}&order=ts.asc&limit=20000`))
   .filter((r) => ilDay(Date.parse(r.ts)) === day);
 const aiRows = await sb(`ai_usage_daily?select=day,bot,station,model,calls,cost_usd&day=gte.${weekFrom}&day=lte.${day}`);
-const aiMonth = await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${day.slice(0, 7)}-01&day=lte.${day}`);
+const aiMonth = await sb(`ai_usage_daily?select=day,bot,cost_usd&day=gte.${day.slice(0, 7)}-01&day=lte.${day}`);
 let issues = await sb(`bot_issues?select=*&order=id.asc`);
 const lessons = await sb(`bot_lessons?select=bot,lesson,created_at&order=created_at.desc&limit=20`);
 const prev = (await sb(`bot_reports?select=facts&day=eq.${yesterday}`))[0]?.facts || null;
+// for the knowledge file: the 6 days before (facts per bot) and the setting changes of 30 days
+const week6 = await sb(`bot_reports?select=day,bots:facts->bots&day=gte.${ilDay(ilDayStart(day) - 6 * 86_400_000)}&day=lt.${day}&order=day.asc`);
+const changes = await sb(`aura_changes?select=id,ts,actor,bot,key,old,new,undo_of&ts=gte.${new Date(ilDayStart(day) - 30 * 86_400_000).toISOString()}&order=id.desc&limit=300`);
 
 // ---------- problems: one per fingerprint, tracked until solved; a fixed one seen again "came back" ----------
 const touched = new Map();
@@ -72,12 +75,14 @@ if (env.OPENAI_API_KEY) {
     stations: Object.fromEntries(bots.map((b) => [b.bot, b.stations.map((s) => `${s.id}: ${s.name} (${s.kind}) ${s.does}`)])),
     problems: toExplain.map((i) => ({ fingerprint: i.fingerprint, bot: i.bot, station: i.station, count: i.count, status: i.status, error: i.sample, file: i.file, line: i.line, func: i.func })),
     lessons: lessons.map((l) => `${l.bot || ''}: ${l.lesson}`),
+    settings: Object.fromEntries(bots.map((b) => [b.bot, b.settings.map((e) => `${e.key} (${e.kind}${e.min != null ? ` ${e.min}-${e.max}` : ''}): ${e.label}`)])),
   };
   const prompt = `You review a day of Maor's 7 bots (technical data only). Answer in JSON only:
 {"summary": "<2 short Hebrew sentences on the day>",
  "problems": [{"fingerprint": "<as given>", "title": "<Hebrew, max 6 words>", "severity": "critical|high|medium|low", "explanation": "<Hebrew, 1 sentence: what happened and the likely cause>", "suggestion": "<Hebrew, 1 sentence: what to check or change in the code; name the file if known>"}],
- "suggestions": [{"bot": "<bot id>", "kind": "cost|reliability|quota", "text": "<Hebrew, 1 sentence, concrete, based on the numbers>"}]}
+ "suggestions": [{"bot": "<bot id>", "kind": "cost|reliability|quota", "text": "<Hebrew, 1 sentence, concrete, based on the numbers>", "action": {"key": "<optional: one of that bot's settings keys>", "value": "<the new value, in the setting's kind>"}}]}
 Rules: base everything on the data; no guesses presented as facts; max 6 suggestions; critical = the bot did not deliver its product.
+Add "action" to a suggestion only when the suggestion is exactly a change of one of that bot's settings (listed in "settings"); otherwise leave it out.
 Data: ${JSON.stringify(brief)}`;
   try {
     const r = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -87,6 +92,7 @@ Data: ${JSON.stringify(brief)}`;
     const j = await r.json();
     if (!r.ok) throw new Error(`OpenAI ${r.status}: ${JSON.stringify(j).slice(0, 200)}`);
     analysis = JSON.parse(j.choices[0].message.content); usage = j.usage;
+    analysis.suggestions = cleanSuggestions(analysis.suggestions, bots);
     for (const p of analysis.problems || []) {
       const it = issues.find((i) => i.fingerprint === p.fingerprint); if (!it) continue;
       Object.assign(it, { title: p.title || it.title, explanation: p.explanation || it.explanation, suggestion: p.suggestion || it.suggestion, severity: ['critical', 'high', 'medium', 'low'].includes(p.severity) ? p.severity : it.severity });
@@ -107,7 +113,8 @@ for (const it of closed) {
 const auraCfg = await sb('rpc/aura_config', { method: 'POST', body: JSON.stringify({ p_bot: 'aura' }) }).catch(() => null);   // Maor's budget field
 const money = budget(aiMonth, day, limitOf(auraCfg, env.REPORT_BUDGET));
 const cost = usage ? (usage.prompt_tokens * 0.1 + usage.completion_tokens * 0.5) / 1e6 : null;   // gpt-6-luna's price (bot-office/office/lib/prices.mjs)
-const report = { day, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length, closed: closed.length, budget: money }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost, created_at: new Date().toISOString() };   // a rerun of the same day shows when it was rebuilt
+const knowledge = knowledgeMd({ day, builtAt: Date.now(), bots, week: [...week6, { day, bots: facts }], issues, changes, ai: { week: aiRows, month: aiMonth }, money, suggestions: analysis?.suggestions || [], lessons });
+const report = { day, knowledge, facts: { total, bots: facts, newProblems: [...touched.values()].filter((i) => i._new).length, regressed: [...touched.values()].filter((i) => i.status === 'regressed').length, closed: closed.length, budget: money }, analysis, model: env.OPENAI_API_KEY ? model : null, cost_usd: cost, created_at: new Date().toISOString() };   // a rerun of the same day shows when it was rebuilt
 await sb('bot_reports?on_conflict=day', { method: 'POST', body: JSON.stringify(report), headers: { Prefer: 'resolution=merge-duplicates,return=minimal' } });
 console.log(`[report] saved: ${total.runs} runs, ${total.failedRuns} failed, ${touched.size} problems seen, AI $${total.aiCost}`);
 
