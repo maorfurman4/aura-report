@@ -238,3 +238,24 @@ console.log('ok: report facts');
   assert.equal(minutesAlert(null), null); assert.equal(minutesAlert({ minutes: 5 }), null, 'no month or free: no alert');
   console.log('ok minutes alert');
 }
+
+// 2026-11-22 06:40 reels: timing failed, the script was rewritten, the 5-minute render sent no report, the reel went out.
+// One run, not failed: a station that errs and then finishes is a retry; a station still working keeps the run open.
+{
+  const { runsOf, watchAlerts } = await import('./lib.mjs');
+  const at = (hms) => `2026-11-22T04:${hms}Z`, row = (t, s, st) => ({ ts: at(t), bot: 'reels', station_id: s, status: st });
+  const rows = [row('40:55', 'pick', 'working'), row('41:03', 'pick', 'done'), row('41:30', 'timing', 'working'), row('41:33', 'timing', 'error'),
+    row('41:33', 'script', 'working'), row('42:01', 'script', 'done'), row('42:08', 'timing', 'working'), row('42:12', 'timing', 'done'),
+    row('42:13', 'render', 'working'), row('47:19', 'render', 'done'), row('47:20', 'preview', 'working'), row('47:24', 'preview', 'done'), row('47:24', 'approve', 'working')];
+  const runs = runsOf(rows);
+  assert.equal(runs.length, 1, 'the render kept the run open');
+  assert.equal(runs[0].failed, false, 'timing recovered on the retry');
+  // a station that ends on an error is still a failed run; a silent gap with nothing working still splits runs
+  assert.equal(runsOf([row('40:00', 'script', 'working'), row('40:05', 'script', 'error')])[0].failed, true);
+  assert.equal(runsOf([row('40:00', 'pick', 'done'), row('47:00', 'pick', 'done')]).length, 2);
+  // a station stuck "working" (approve waits for Maor) does not glue runs together forever
+  assert.equal(runsOf([row('00:00', 'approve', 'working'), { ts: '2026-11-22T05:10:00Z', bot: 'reels', station_id: 'pick', status: 'done' }]).length, 2);
+  const bots = [{ bot: 'reels', name: 'עורך הווידאו', pipelines: [['pick', 'timing', 'render', 'preview', 'approve', 'publish']], checkMissing: false }];
+  assert.deepEqual(watchAlerts({ bots, events: rows, now: Date.parse('2026-11-22T05:30:00Z') }), [], 'no "failed without a product" alert');
+  console.log('ok retry is not a failure');
+}
