@@ -10,7 +10,7 @@
 // Secrets (Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN,
 // YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15; Maor's field in AURA wins),
 // RENDER_HEALTH_URL (default the Panda search bot's /health).
-import { auraSinceOf, auraTimesOf, botOf, budget, budgetAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, withAuraTimes } from '../lib.mjs';
+import { auraSinceOf, auraTimesOf, botOf, budget, budgetAlert, minutesAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, withAuraTimes } from '../lib.mjs';
 
 const env = (k: string) => Deno.env.get(k) || '';
 const SB = env('SUPABASE_URL'), SK = env('SUPABASE_SERVICE_ROLE_KEY'), TG = env('REPORT_TELEGRAM_TOKEN'), CHAT = env('REPORT_TELEGRAM_CHAT');
@@ -52,6 +52,9 @@ async function watch() {
   const today = ilDay(now), money = budget(await sb(`ai_usage_daily?select=day,cost_usd&day=gte.${today.slice(0, 7)}-01&day=lte.${today}`), today, limitOf(await sb('rpc/aura_config', { method: 'POST', body: JSON.stringify({ p_bot: 'aura' }) }).catch(() => null), env('REPORT_BUDGET')));
   const b = budgetAlert(money, today);
   if (b && await once(b.key, b.text)) sent.push(b.key);
+  // GitHub Actions minutes of the private repos (the office on the Mac writes the count): 80%, then out
+  const gm = minutesAlert((await sb('aura_metrics?select=value&key=eq.actions_minutes').catch(() => []))?.[0]?.value);
+  if (gm && await once(gm.key, gm.text)) sent.push(gm.key);
   // Render (Panda's search bot, the reels approval): only 07-23, when its own pinger keeps it awake, so this adds no hours
   const hr = ilHour(now);
   if (hr >= 7 && hr < 23) {

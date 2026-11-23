@@ -185,6 +185,17 @@ export function budgetAlert(money, day) {
   return null;
 }
 
+// GitHub Actions minutes of the month in the private repos (aura_metrics 'actions_minutes', counted by the office on the
+// Mac): at 80% a warning, at 100% GitHub stops every private repo's runs until the 1st (2026-11-23 it stopped the bots)
+export function minutesAlert(m) {
+  if (!m?.month || !m.free || typeof m.minutes !== 'number') return null;
+  const top = Object.entries(m.byRepo || {}).sort((a, b) => b[1].minutes - a[1].minutes).slice(0, 3).map(([r, v]) => `${r.split('/').pop()} ${v.minutes}`).join(', ');
+  const line = `${m.minutes} מתוך ${m.free} דקות${top ? ` · הכי הרבה: ${top}` : ''}`;
+  if (m.minutes >= m.free) return { key: `ghmin|${m.month}|out`, text: `🚨 <b>נגמרו דקות GitHub Actions</b>: ${line}. ריפו פרטיים לא ירוצו עד ה-1 בחודש (הבוטים ציבוריים ולא נפגעים).` };
+  if (m.minutes >= 0.8 * m.free) return { key: `ghmin|${m.month}|80`, text: `⚠️ <b>80% מדקות GitHub Actions</b>: ${line}` };
+  return null;
+}
+
 // the 7 Israel days that end on `end`, oldest first (noon of each day, so a DST change never skips one)
 export const weekOf = (end, back = 0) => Array.from({ length: 7 }, (_, i) => ilDay(ilDayStart(end) + 12 * 3600_000 - (6 - i + back) * 86_400_000));
 
