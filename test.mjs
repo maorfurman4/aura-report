@@ -259,3 +259,18 @@ console.log('ok: report facts');
   assert.deepEqual(watchAlerts({ bots, events: rows, now: Date.parse('2026-11-22T05:30:00Z') }), [], 'no "failed without a product" alert');
   console.log('ok retry is not a failure');
 }
+
+// the weekly summary's Claude section (bot-office plan 2026-11-23-claude-district): counts from aura_metrics
+{
+  const { claudeLines } = await import('./lib.mjs');
+  const now = Date.parse('2026-11-29T07:00:00Z'), row = (daysOld, v = {}) => ({ updated_at: new Date(now - daysOld * 86_400_000).toISOString(), value: { top: [{ name: 'a', uses: 12 }, { name: '<x>', uses: 7 }], unused: { n: 14, names: ['p', 'q'] }, heavy: [{ name: 'a', tokensWeek: 12345 }], ...v } });
+  const l = claudeLines(row(1), now);
+  assert.equal(l[1], '<b>Claude השבוע</b>');
+  assert.ok(l.some((x) => x.startsWith('הכי בשימוש:') && x.includes('a 12') && x.includes('&lt;x&gt; 7')));
+  assert.ok(l.some((x) => x.startsWith('לא בשימוש 30 יום: 14') && x.includes('p, q')));
+  assert.ok(l.some((x) => x.startsWith('הכי כבדים:') && x.includes('≈12k')));
+  assert.match(claudeLines(row(9), now).join('\n'), /אין נתונים עדכניים/);
+  assert.deepEqual(claudeLines(undefined, now), []);
+  assert.deepEqual(claudeLines(row(1, { top: [], unused: { n: 0, names: [] }, heavy: [] }), now).slice(2), ['לא היה שימוש בסקילים השבוע']);
+  console.log('ok claude week');
+}

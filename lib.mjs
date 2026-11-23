@@ -235,6 +235,20 @@ export function weeklyText({ days, reports, prevReports = [], issues = [] }) {
   return lines.join('\n');
 }
 
+// the weekly summary's Claude section: the office on the Mac writes counts only to aura_metrics.claude_usage_week once
+// a day (bot-office lib/claude-usage.mjs rollup). Older than 8 days = the Mac was off: say so, never stale numbers.
+export function claudeLines(row, now = Date.now()) {
+  if (!row?.value) return [];
+  const esc = (s) => String(s ?? '').replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]));
+  const head = ['', '<b>Claude השבוע</b>'];
+  if (!(now - Date.parse(row.updated_at) <= 8 * 86_400_000)) return [...head, 'אין נתונים עדכניים (המק כבוי?)'];
+  const v = row.value, out = [];
+  if (v.top?.length) out.push(`הכי בשימוש: ${v.top.map((t) => `${esc(t.name)} ${t.uses}`).join(' · ')}`);
+  if (v.unused?.n) out.push(`לא בשימוש 30 יום: ${v.unused.n}${v.unused.names?.length ? ` (${v.unused.names.map(esc).join(', ')}${v.unused.n > v.unused.names.length ? '…' : ''})` : ''}`);
+  if (v.heavy?.length) out.push(`הכי כבדים: ${v.heavy.map((h) => `${esc(h.name)} ≈${Math.round(h.tokensWeek / 1000)}k טוקנים`).join(' · ')}`);
+  return [...head, ...(out.length ? out : ['לא היה שימוש בסקילים השבוע'])];
+}
+
 // the Telegram summary: one line when all is well, the details only where something is wrong
 export function telegramText({ day, total, facts, problems = [], closed = [], budget: money, summary, late = false }) {
   const esc = (s) => String(s ?? '').replace(/[<&>]/g, (c) => ({ '<': '&lt;', '&': '&amp;', '>': '&gt;' }[c]));
