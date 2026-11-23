@@ -35,17 +35,27 @@ export function normalizeError(text) {
 }
 export const fingerprint = (bot, station, text) => `${bot}|${station || '-'}|${normalizeError(text)}`;
 
-// a bot's runs in a day: run-level rows when there are some, else bursts of station reports with no 5-minute gap
-export function runsOf(rows, gapMs = 5 * 60_000) {
+// a bot's runs in a day: run-level rows when there are some, else bursts of station reports with no 5-minute gap. A
+// station still "working" keeps its run open up to `openMs` (reels' render reports nothing for 5+ minutes). A run failed
+// when a station's LAST report in it is an error (or a run-level "failed"): an error the station recovered from on a
+// retry is not a failure (reels 2026-11-22: timing erred, the script was rewritten, the reel went out).
+export function runsOf(rows, gapMs = 5 * 60_000, openMs = 30 * 60_000) {
   const runs = [];
   let cur = null;
+  const close = (run) => { run.failed = run.kindFailed || [...run.last.values()].includes('error'); };
   for (const r of rows) {
-    const ts = Date.parse(r.ts);
-    if (!cur || ts - cur.end > gapMs) { cur = { start: ts, end: ts, rows: [], failed: false, stations: new Set() }; runs.push(cur); }
+    const ts = Date.parse(r.ts), gap = cur ? ts - cur.end : Infinity;
+    const open = cur && [...cur.last.values()].includes('working');
+    if (gap > gapMs && !(open && gap <= openMs)) {
+      if (cur) close(cur);
+      cur = { start: ts, end: ts, rows: [], failed: false, kindFailed: false, stations: new Set(), last: new Map() };
+      runs.push(cur);
+    }
     cur.end = ts; cur.rows.push(r);
-    if (r.station_id) cur.stations.add(r.station_id);
-    if (r.status === 'error' || r.kind === 'failed') cur.failed = true;
+    if (r.station_id) { cur.stations.add(r.station_id); if (r.status) cur.last.set(r.station_id, r.status); }
+    if (r.kind === 'failed') cur.kindFailed = true;
   }
+  if (cur) close(cur);
   return runs;
 }
 
