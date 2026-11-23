@@ -225,3 +225,16 @@ console.log('ok: report facts');
   assert.equal(scheduledDay(Date.parse('2026-07-01T21:30:00Z')), '2026-07-01', '00:30 in summer = yesterday');
   console.log('ok: false alarms');
 }
+
+// GitHub Actions minutes (aura_metrics row from the office): 80%, then out; the month in the key, so once a month each
+{
+  const { minutesAlert } = await import('./lib.mjs');
+  const m = (minutes, month = '2026-11') => ({ month, minutes, free: 2000, byRepo: { 'm/app': { minutes: Math.round(minutes * 0.7) }, 'm/dash': { minutes: Math.round(minutes * 0.3) } } });
+  assert.equal(minutesAlert(m(1500)), null);
+  const w = minutesAlert(m(1650));
+  assert.equal(w.key, 'ghmin|2026-11|80'); assert.match(w.text, /1650 מתוך 2000/); assert.match(w.text, /app 1155/);
+  const o = minutesAlert(m(2010));
+  assert.equal(o.key, 'ghmin|2026-11|out'); assert.match(o.text, /נגמרו/);
+  assert.equal(minutesAlert(null), null); assert.equal(minutesAlert({ minutes: 5 }), null, 'no month or free: no alert');
+  console.log('ok minutes alert');
+}
