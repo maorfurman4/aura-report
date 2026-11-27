@@ -274,3 +274,21 @@ console.log('ok: report facts');
   assert.deepEqual(claudeLines(row(1, { top: [], unused: { n: 0, names: [] }, heavy: [] }), now).slice(2), ['לא היה שימוש בסקילים השבוע']);
   console.log('ok claude week');
 }
+
+// the webhook check retries one Telegram failure once; a bad token (401/404) alerts at once
+{
+  const { webhookInfo } = await import('./lib.mjs');
+  const answers = (...list) => { let n = 0; const get = async () => list[n++]; get.calls = () => n; return get; };
+  const okInfo = { ok: true, result: { url: 'https://x' } }, wait = async () => {};
+  let get = answers({ ok: false, why: 'timeout' }, okInfo);
+  assert.deepEqual(await webhookInfo(get, wait), okInfo, 'a timeout, then an answer: no alert');
+  get = answers({ ok: false, status: 502, why: '502' }, { ok: false, status: 429, why: '429 Too Many Requests' });
+  const bad = await webhookInfo(get, wait);
+  assert.equal(bad.result, undefined);
+  assert.equal(bad.why, '429 Too Many Requests', 'both failed: the alert carries the last reason');
+  assert.equal(get.calls(), 2);
+  get = answers({ ok: false, status: 401, why: '401 Unauthorized' }, okInfo);
+  assert.equal((await webhookInfo(get, wait)).why, '401 Unauthorized');
+  assert.equal(get.calls(), 1, 'a bad token is not retried');
+  console.log('ok webhook check retry');
+}
