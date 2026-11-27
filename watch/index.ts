@@ -10,7 +10,7 @@
 // Secrets (Edge Functions > Secrets): REPORT_TELEGRAM_TOKEN, REPORT_TELEGRAM_CHAT, GH_DISPATCH_TOKEN,
 // YAHLI_TELEGRAM_TOKEN, FINANCE_TELEGRAM_TOKEN. A missing one turns its part off. Optional: REPORT_BUDGET (default 15; Maor's field in AURA wins),
 // RENDER_HEALTH_URL (default the Panda search bot's /health).
-import { auraSinceOf, auraTimesOf, botOf, budget, budgetAlert, minutesAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, withAuraTimes } from '../lib.mjs';
+import { auraSinceOf, auraTimesOf, botOf, budget, budgetAlert, minutesAlert, dispatchBody, ilDay, ilDayStart, limitOf, runSchedule, scheduleJobs, watchAlerts, webhookInfo, withAuraTimes } from '../lib.mjs';
 
 const env = (k: string) => Deno.env.get(k) || '';
 const SB = env('SUPABASE_URL'), SK = env('SUPABASE_SERVICE_ROLE_KEY'), TG = env('REPORT_TELEGRAM_TOKEN'), CHAT = env('REPORT_TELEGRAM_CHAT');
@@ -23,9 +23,13 @@ async function sb(path: string, opts: RequestInit = {}) {
   const text = await r.text();
   return text ? JSON.parse(text) : null;
 }
+// a failure keeps why: timeout, the HTTP status, Telegram's description
 async function tg(method: string, body: object, token = TG) {
-  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) }).catch(() => null);
-  return r ? await r.json().catch(() => ({ ok: false })) : { ok: false };
+  const r = await fetch(`https://api.telegram.org/bot${token}/${method}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body), signal: AbortSignal.timeout(15_000) })
+    .catch((e) => ({ why: e?.name === 'TimeoutError' ? 'timeout' : String(e?.message || e).slice(0, 80) }));
+  if (!(r instanceof Response)) return { ok: false, ...r };
+  const j = await r.json().catch(() => null);
+  return j?.ok ? j : { ok: false, status: r.status, why: `${r.status}${j?.description ? ` ${String(j.description).slice(0, 80)}` : ''}` };
 }
 // the Telegram webhook's secret: derived from the bot token, so there is no extra secret to keep
 const secret = async () => [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(`aura-watch|${TG}`)))].map((b) => b.toString(16).padStart(2, '0')).join('').slice(0, 48);
@@ -64,8 +68,9 @@ async function watch() {
   // the bots that only answer messages: Telegram tells whether their webhook is set and whether it fails
   for (const [bot, name, token] of [['yahli', 'יהלי', env('YAHLI_TELEGRAM_TOKEN')], ['finance', 'בוט הכספים', env('FINANCE_TELEGRAM_TOKEN')]]) {
     if (!token) { hooks[bot] = 'no token'; continue; }
-    const info = (await tg('getWebhookInfo', {}, token)).result;
-    const [kind, why] = !info ? ['tg', 'טלגרם לא ענה על מצב ה-webhook']
+    const res = await webhookInfo(() => tg('getWebhookInfo', {}, token)), info = res.result;
+    if (!info) console.error('[watch]', bot, 'getWebhookInfo failed:', res.why);
+    const [kind, why] = !info ? ['tg', `טלגרם לא ענה על מצב ה-webhook (${res.why})`]
       : !info.url ? ['none', 'אין webhook: הבוט לא מקבל הודעות']
       : info.last_error_date * 1000 > now - 2 * 3600_000 ? ['error', `ה-webhook נכשל: ${info.last_error_message || ''}`]
       : info.pending_update_count >= 5 ? ['pending', `${info.pending_update_count} הודעות מחכות ולא נמסרו לבוט`] : [];

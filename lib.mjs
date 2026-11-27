@@ -387,3 +387,11 @@ export function auraSinceOf(settings) {
   for (const r of settings || []) { const t = Date.parse(r.updated_at); if (t > (out[r.bot] || 0)) out[r.bot] = t; }
   return out;
 }
+// the webhook check's Telegram call, once more after a short pause: one timeout, 429 or 5xx is not a dead bot.
+// 401/404 = a bad token, a real fault: no retry. get() -> tg()'s answer ({ok, result} or {ok: false, status, why}).
+export async function webhookInfo(get, wait = (ms) => new Promise((r) => setTimeout(r, ms))) {
+  const a = await get();
+  if (a.ok || a.status === 401 || a.status === 404) return a;
+  await wait(3000);
+  return get();
+}
